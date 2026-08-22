@@ -1,0 +1,54 @@
+# Changelog
+
+All notable changes to Homelab Dashboard are documented here.
+
+The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
+
+## [0.6.0] - 2026-08-22
+
+### Added
+- Persistent drag-and-drop service ordering within categories.
+- Favorite/pinned services.
+- Compact, Standard, and Wide card sizes.
+- Persisted layout fields and automatic in-place database migration.
+
+## [0.5.0] - 2026-08-22
+
+### Added
+- Searchable catalog of common self-hosted services.
+- Default categories, aliases, port hints, and service descriptions.
+- Open-ended service type identifiers for future integrations/plugins.
+- SVG/PNG service-logo fallback handling.
+
+## [0.4.1] - 2026-08-22
+
+### Fixed
+- Known-service logos now take precedence over legacy saved icon values.
+- Added more reliable service recognition by name and URL.
+
+## [0.4.0] - 2026-08-22
+
+### Added
+- Bundled service logos.
+- Jellyfin API integration for server/session information.
+- Read-only Docker overview through an isolated socket proxy.
+
+## [0.3.0] - 2026-08-22
+
+### Added
+- Live service health monitoring and latency display.
+- Automatic and manual status refresh.
+- Per-service monitoring toggle.
+
+## [0.2.0] - 2026-08-22
+
+### Added
+- First-run administrator setup.
+- Login/session authentication and CSRF protection.
+- SQLite persistence.
+- Add/edit/delete/disable service management.
+
+## [0.1.0] - 2026-08-04
+
+### Added
+- Initial Docker/Dockge dashboard starter.

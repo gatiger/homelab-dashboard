@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible problem with Homelab Dashboard
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve Homelab Dashboard.
+  - type: input
+    id: version
+    attributes:
+      label: Dashboard version
+      placeholder: v0.6.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Host / deployment platform
+      placeholder: TrueNAS SCALE + Dockge, Docker Compose on Ubuntu, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: shell

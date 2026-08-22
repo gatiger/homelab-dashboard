@@ -1,0 +1,47 @@
+services:
+  socket-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:v0.5.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      - socket-proxy
+    environment:
+      APP_NAME: ${APP_NAME:-Homelab Dashboard}
+      SESSION_HOURS: ${SESSION_HOURS:-168}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      STATUS_TIMEOUT: ${STATUS_TIMEOUT:-4}
+      STATUS_WORKERS: ${STATUS_WORKERS:-8}
+      DOCKER_PROXY_URL: http://socket-proxy:2375
+    volumes:
+      - dashboard-data:/app/data
+    networks:
+      - app
+      - docker-api
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${DASHBOARD_PORT:-8080}:80"
+    networks:
+      - app
+
+volumes:
+  dashboard-data:
+
+networks:
+  app:
+  docker-api:
+    internal: true
