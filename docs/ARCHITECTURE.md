@@ -22,7 +22,7 @@
 
 ## Service model
 
-Each configured service currently has an ID, display name, open-ended service type identifier, URL, category, optional custom icon, enabled state, monitoring state, favorite/pinned state, card size, persistent sort order, optional encrypted API credential, and timestamps.
+Each configured service currently has an ID, display name, open-ended service type identifier, URL, dashboard page assignment, category, optional custom icon, enabled state, monitoring state, favorite/pinned state, card size, persistent sort order, optional encrypted API credential, and timestamps.
 
 The catalog is intentionally separate from configured services. A catalog entry is a template; selecting it creates a normal service record that the user can rename, re-categorize, or point at any URL/port.
 
@@ -32,7 +32,9 @@ The catalog metadata will become the basis for a future versioned integration ma
 
 ## Layout model
 
-Layout preferences are stored with each configured service rather than only in browser local storage. `sort_order` controls card order within a category, `favorite` pins a card ahead of unpinned cards in that category, and `card_size` is one of `compact`, `standard`, or `wide`. This keeps a dashboard consistent across browsers and makes later multi-page/import-export features possible without redesigning the persistence layer.
+Dashboard structure is persisted server-side rather than only in browser local storage. `dashboard_pages` stores page/tab names and order. Every service has a `page_id`, while `category_layouts` stores category order and collapsed state separately for each page. Service `sort_order` controls card order within a page/category, `favorite` pins a card ahead of unpinned cards in that category, and `card_size` is one of `compact`, `standard`, or `wide`.
+
+The browser only keeps the most recently selected page ID as a convenience; the actual page/category/card structure remains portable across browsers and devices because it lives in SQLite.
 
 
 ## Distribution model

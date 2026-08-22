@@ -1,8 +1,11 @@
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   GripVertical,
+  LayoutGrid,
   Link as LinkIcon,
   LogOut,
   Pencil,
@@ -31,6 +34,7 @@ type Service = {
   type: string;
   url: string;
   category: string;
+  page_id: number;
   icon?: string | null;
   enabled: boolean;
   status_check: boolean;
@@ -47,6 +51,7 @@ type ServiceForm = {
   type: string;
   url: string;
   category: string;
+  page_id: number;
   icon: string;
   enabled: boolean;
   status_check: boolean;
@@ -55,6 +60,22 @@ type ServiceForm = {
   sort_order: number;
   api_key: string;
   clear_api_key: boolean;
+};
+
+type DashboardPage = {
+  id: number;
+  name: string;
+  sort_order: number;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type CategoryLayout = {
+  page_id: number;
+  name: string;
+  sort_order: number;
+  collapsed: boolean;
 };
 
 type ServiceInsight = {
@@ -75,13 +96,14 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.7.0";
+const APP_VERSION = "0.8.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
   type: "link",
   url: "https://",
   category: "General",
+  page_id: 1,
   icon: "",
   enabled: true,
   status_check: true,
@@ -279,6 +301,8 @@ function ServiceModal({
   onSaved,
   onDeleted,
   csrfToken,
+  pages,
+  defaultPageId,
 }: {
   service: Service | null;
   template?: CatalogEntry | null;
@@ -286,6 +310,8 @@ function ServiceModal({
   onSaved: () => void;
   onDeleted: () => void;
   csrfToken?: string | null;
+  pages: DashboardPage[];
+  defaultPageId: number;
 }) {
   const initialTemplate = template ?? (service ? CATALOG_BY_TYPE[service.type] : null);
   const [form, setForm] = useState<ServiceForm>(service ? {
@@ -293,6 +319,7 @@ function ServiceModal({
     type: service.type,
     url: service.url,
     category: service.category,
+    page_id: service.page_id,
     icon: service.icon ?? "",
     enabled: service.enabled,
     status_check: service.status_check,
@@ -306,6 +333,7 @@ function ServiceModal({
     type: initialTemplate.type,
     url: `${initialTemplate.defaultScheme ?? "http"}://`,
     category: initialTemplate.category === "Custom" ? "General" : initialTemplate.category,
+    page_id: defaultPageId,
     icon: "",
     enabled: true,
     status_check: true,
@@ -314,7 +342,7 @@ function ServiceModal({
     sort_order: 0,
     api_key: "",
     clear_api_key: false,
-  } : EMPTY_SERVICE);
+  } : { ...EMPTY_SERVICE, page_id: defaultPageId });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const selectedCatalogEntry = CATALOG_BY_TYPE[form.type];
@@ -394,6 +422,12 @@ function ServiceModal({
             {selectedCatalogEntry?.defaultPort && <small>Common default web port: {selectedCatalogEntry.defaultPort}. Your installation may use a different port.</small>}
           </label>
           <label>
+            <span>Dashboard page</span>
+            <select value={form.page_id} onChange={(event) => setField("page_id", Number(event.target.value))}>
+              {pages.map((page) => <option key={page.id} value={page.id}>{page.name}</option>)}
+            </select>
+          </label>
+          <label>
             <span>Category</span>
             <input value={form.category} onChange={(event) => setField("category", event.target.value)} placeholder={selectedCatalogEntry?.category ?? "General"} required />
           </label>
@@ -469,6 +503,91 @@ function ServiceModal({
   );
 }
 
+function PageModal({
+  page,
+  serviceCount,
+  onClose,
+  onSaved,
+  onDeleted,
+  csrfToken,
+}: {
+  page: DashboardPage | null;
+  serviceCount: number;
+  onClose: () => void;
+  onSaved: (page: DashboardPage) => void;
+  onDeleted: () => void;
+  csrfToken?: string | null;
+}) {
+  const [name, setName] = useState(page?.name ?? "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const saved = await api<DashboardPage>(page ? `/api/pages/${page.id}` : "/api/pages", {
+        method: page ? "PUT" : "POST",
+        body: JSON.stringify({ name }),
+      }, csrfToken);
+      onSaved(saved);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save page.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!page || page.is_default) return;
+    if (!window.confirm(`Delete the ${page.name} page?`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api<void>(`/api/pages/${page.id}`, { method: "DELETE" }, csrfToken);
+      onDeleted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete page.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
+      <section className="modal page-modal" role="dialog" aria-modal="true" aria-labelledby="page-modal-title">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">DASHBOARD PAGE</p>
+            <h2 id="page-modal-title">{page ? `Edit ${page.name}` : "Add dashboard page"}</h2>
+            <p className="modal-subhead">Pages let you separate media, infrastructure, monitoring, home automation, or any other group of services.</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button>
+        </header>
+        <form className="page-form" onSubmit={save}>
+          <label>
+            <span>Page name</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} maxLength={60} placeholder="Infrastructure" required autoFocus />
+          </label>
+          {page?.is_default && <small>The default Home page can be renamed but cannot be deleted.</small>}
+          {page && !page.is_default && serviceCount > 0 && <small>Move or remove the {serviceCount} service{serviceCount === 1 ? "" : "s"} on this page before deleting it.</small>}
+          {error && <div className="notice compact">{error}</div>}
+          <div className="modal-actions">
+            {page && !page.is_default && (
+              <button className="danger-button" disabled={busy || serviceCount > 0} type="button" onClick={() => void remove()}>
+                <Trash2 size={16} /> Delete page
+              </button>
+            )}
+            <div className="action-spacer" />
+            <button className="secondary" disabled={busy} type="button" onClick={onClose}>Cancel</button>
+            <button className="primary" disabled={busy} type="submit">{busy ? "Saving…" : page ? "Save page" : "Add page"}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function inferredServiceType(service: Service): string | null {
   if (CATALOG_BY_TYPE[service.type]?.icon) return service.type;
   if (!["link", "other"].includes(service.type)) return service.type;
@@ -491,10 +610,14 @@ function ServiceIcon({ service }: { service: Service }) {
 
 function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
   const [services, setServices] = useState<Service[]>([]);
+  const [pages, setPages] = useState<DashboardPage[]>([]);
+  const [categories, setCategories] = useState<CategoryLayout[]>([]);
+  const [activePageId, setActivePageId] = useState<number>(() => Number(window.localStorage.getItem("homelab-dashboard-active-page")) || 1);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Service | null | undefined>(undefined);
+  const [editingPage, setEditingPage] = useState<DashboardPage | null | undefined>(undefined);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<CatalogEntry | null>(null);
   const [manageMode, setManageMode] = useState(false);
@@ -502,8 +625,12 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [statusLoading, setStatusLoading] = useState(false);
   const [insights, setInsights] = useState<Record<number, ServiceInsight>>({});
   const [insightLoading, setInsightLoading] = useState(false);
-  const [dragging, setDragging] = useState<{ id: number; category: string; favorite: boolean } | null>(null);
+  const [dragging, setDragging] = useState<{ id: number; page_id: number; category: string; favorite: boolean } | null>(null);
   const [dragOverId, setDragOverId] = useState<number | null>(null);
+  const [draggingCategory, setDraggingCategory] = useState<string | null>(null);
+  const [dragOverCategory, setDragOverCategory] = useState<string | null>(null);
+  const [draggingPageId, setDraggingPageId] = useState<number | null>(null);
+  const [dragOverPageId, setDragOverPageId] = useState<number | null>(null);
 
   async function loadServices() {
     setLoading(true);
@@ -514,6 +641,24 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       setError(err instanceof Error ? err.message : "Dashboard API is unavailable.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadStructure() {
+    try {
+      const [pageResult, categoryResult] = await Promise.all([
+        api<DashboardPage[]>("/api/pages"),
+        api<CategoryLayout[]>("/api/categories"),
+      ]);
+      setPages(pageResult);
+      setCategories(categoryResult);
+      setActivePageId((current) => {
+        if (pageResult.some((page) => page.id === current)) return current;
+        const fallback = pageResult.find((page) => page.is_default) ?? pageResult[0];
+        return fallback?.id ?? 1;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load dashboard layout.");
     }
   }
 
@@ -546,11 +691,16 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   useEffect(() => {
-    void loadServices();
+    void Promise.all([loadServices(), loadStructure()]);
     void refreshTelemetry();
     const timer = window.setInterval(() => { void refreshTelemetry(); }, 30000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("homelab-dashboard-active-page", String(activePageId));
+    setQuery("");
+  }, [activePageId]);
 
   function statusPresentation(service: Service) {
     if (!service.enabled) return { state: "disabled", label: "Disabled", title: "Service is hidden" };
@@ -567,14 +717,28 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     return { state: "disabled", label: "Disabled", title: current.detail ?? "Service is hidden" };
   }
 
+  const activePage = pages.find((page) => page.id === activePageId) ?? pages[0];
+
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    const visible = manageMode ? services : services.filter((service) => service.enabled);
+    const visible = (manageMode ? services : services.filter((service) => service.enabled))
+      .filter((service) => service.page_id === activePageId);
     if (!normalized) return visible;
     return visible.filter((service) =>
       `${service.name} ${service.category} ${service.type}`.toLowerCase().includes(normalized),
     );
-  }, [query, services, manageMode]);
+  }, [query, services, manageMode, activePageId]);
+
+  const pageCategories = useMemo(() => {
+    const layouts = categories
+      .filter((category) => category.page_id === activePageId)
+      .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+    const known = new Set(layouts.map((category) => category.name.toLowerCase()));
+    const extras = Array.from(new Set(
+      services.filter((service) => service.page_id === activePageId).map((service) => service.category),
+    )).filter((name) => !known.has(name.toLowerCase())).sort((a, b) => a.localeCompare(b));
+    return [...layouts, ...extras.map((name, index) => ({ page_id: activePageId, name, sort_order: 100000 + index, collapsed: false }))];
+  }, [categories, services, activePageId]);
 
   const groups = useMemo(() => {
     const grouped = filtered.reduce<Record<string, Service[]>>((acc, service) => {
@@ -584,8 +748,11 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     for (const categoryServices of Object.values(grouped)) {
       categoryServices.sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.sort_order - b.sort_order || a.name.localeCompare(b.name));
     }
-    return grouped;
-  }, [filtered]);
+    const order = new Map(pageCategories.map((category, index) => [category.name.toLowerCase(), index]));
+    return (Object.entries(grouped) as [string, Service[]][]).sort(([nameA], [nameB]) =>
+      (order.get(nameA.toLowerCase()) ?? 999999) - (order.get(nameB.toLowerCase()) ?? 999999) || nameA.localeCompare(nameB),
+    );
+  }, [filtered, pageCategories]);
 
   async function toggleFavorite(service: Service) {
     const next = !service.favorite;
@@ -606,9 +773,9 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     const source = dragging;
     setDragging(null);
     setDragOverId(null);
-    if (!source || source.id === target.id || source.category !== target.category || source.favorite !== target.favorite || query.trim()) return;
+    if (!source || source.id === target.id || source.page_id !== target.page_id || source.category !== target.category || source.favorite !== target.favorite || query.trim()) return;
     const categoryItems = services
-      .filter((item) => item.category === target.category)
+      .filter((item) => item.page_id === target.page_id && item.category === target.category)
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.sort_order - b.sort_order || a.name.localeCompare(b.name));
     const from = categoryItems.findIndex((item) => item.id === source.id);
     const to = categoryItems.findIndex((item) => item.id === target.id);
@@ -617,15 +784,88 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     const [moved] = reordered.splice(from, 1);
     reordered.splice(to, 0, moved);
     const orderMap = new Map(reordered.map((item, index) => [item.id, index + 1]));
-    setServices((current) => current.map((item) => item.category === target.category ? { ...item, sort_order: orderMap.get(item.id) ?? item.sort_order } : item));
+    setServices((current) => current.map((item) => item.page_id === target.page_id && item.category === target.category ? { ...item, sort_order: orderMap.get(item.id) ?? item.sort_order } : item));
     try {
       await api<Service[]>("/api/services/reorder", {
         method: "POST",
-        body: JSON.stringify({ category: target.category, ordered_ids: reordered.map((item) => item.id) }),
+        body: JSON.stringify({ page_id: target.page_id, category: target.category, ordered_ids: reordered.map((item) => item.id) }),
       }, auth.csrf_token);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save card order.");
       void loadServices();
+    }
+  }
+
+  async function toggleCategory(categoryName: string) {
+    const current = pageCategories.find((category) => category.name.toLowerCase() === categoryName.toLowerCase());
+    const next = !(current?.collapsed ?? false);
+    setCategories((items) => {
+      const found = items.some((item) => item.page_id === activePageId && item.name.toLowerCase() === categoryName.toLowerCase());
+      if (!found) return [...items, { page_id: activePageId, name: categoryName, sort_order: current?.sort_order ?? pageCategories.length + 1, collapsed: next }];
+      return items.map((item) => item.page_id === activePageId && item.name.toLowerCase() === categoryName.toLowerCase() ? { ...item, collapsed: next } : item);
+    });
+    try {
+      const updated = await api<CategoryLayout>("/api/categories/state", {
+        method: "PATCH",
+        body: JSON.stringify({ page_id: activePageId, name: categoryName, collapsed: next }),
+      }, auth.csrf_token);
+      setCategories((items) => {
+        const others = items.filter((item) => !(item.page_id === updated.page_id && item.name.toLowerCase() === updated.name.toLowerCase()));
+        return [...others, updated];
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save category state.");
+      void loadStructure();
+    }
+  }
+
+  async function dropCategory(targetName: string) {
+    const sourceName = draggingCategory;
+    setDraggingCategory(null);
+    setDragOverCategory(null);
+    if (!sourceName || sourceName === targetName || query.trim()) return;
+    const ordered = pageCategories.map((category) => category.name);
+    const from = ordered.findIndex((name) => name === sourceName);
+    const to = ordered.findIndex((name) => name === targetName);
+    if (from < 0 || to < 0) return;
+    const next = [...ordered];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    const orderMap = new Map(next.map((name, index) => [name.toLowerCase(), index + 1]));
+    setCategories((items) => items.map((item) => item.page_id === activePageId ? { ...item, sort_order: orderMap.get(item.name.toLowerCase()) ?? item.sort_order } : item));
+    try {
+      const updated = await api<CategoryLayout[]>("/api/categories/reorder", {
+        method: "POST",
+        body: JSON.stringify({ page_id: activePageId, ordered_names: next }),
+      }, auth.csrf_token);
+      setCategories((items) => [...items.filter((item) => item.page_id !== activePageId), ...updated]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save category order.");
+      void loadStructure();
+    }
+  }
+
+  async function dropPage(targetId: number) {
+    const sourceId = draggingPageId;
+    setDraggingPageId(null);
+    setDragOverPageId(null);
+    if (!sourceId || sourceId === targetId) return;
+    const from = pages.findIndex((page) => page.id === sourceId);
+    const to = pages.findIndex((page) => page.id === targetId);
+    if (from < 0 || to < 0) return;
+    const next = [...pages];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setPages(next.map((page, index) => ({ ...page, sort_order: index + 1 })));
+    try {
+      const updated = await api<DashboardPage[]>("/api/pages/reorder", {
+        method: "POST",
+        body: JSON.stringify({ ordered_ids: next.map((page) => page.id) }),
+      }, auth.csrf_token);
+      setPages(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save page order.");
+      void loadStructure();
     }
   }
 
@@ -647,13 +887,15 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setSelectedTemplate(null);
   }
 
+  const pageServiceCount = (pageId: number) => services.filter((service) => service.page_id === pageId).length;
+
   return (
     <main className="shell">
       <header className="hero">
         <div>
           <p className="eyebrow">SELF-HOSTED CONTROL CENTER</p>
           <h1>{greeting}, {auth.username}.</h1>
-          <p className="subhead">Your services and tools in one place.</p>
+          <p className="subhead">{activePage ? `${activePage.name} · your services and tools in one place.` : "Your services and tools in one place."}</p>
         </div>
         <div className="hero-actions">
           <button className={`secondary ${manageMode ? "active" : ""}`} type="button" onClick={() => setManageMode((value) => !value)}><Settings size={17} /> {manageMode ? "Done" : "Manage"}</button>
@@ -662,9 +904,48 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
         </div>
       </header>
 
+      <nav className="page-tabs" aria-label="Dashboard pages">
+        <div className="page-tab-scroll">
+          {pages.map((page) => (
+            <div
+              className={`page-tab-wrap ${page.id === activePageId ? "active" : ""} ${dragOverPageId === page.id ? "drag-over" : ""}`}
+              key={page.id}
+              draggable={manageMode}
+              onDragStart={(event) => {
+                if (!manageMode) { event.preventDefault(); return; }
+                setDraggingPageId(page.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", `page:${page.id}`);
+              }}
+              onDragOver={(event) => {
+                if (manageMode && draggingPageId && draggingPageId !== page.id) {
+                  event.preventDefault();
+                  setDragOverPageId(page.id);
+                }
+              }}
+              onDragLeave={() => dragOverPageId === page.id && setDragOverPageId(null)}
+              onDrop={(event) => { event.preventDefault(); void dropPage(page.id); }}
+              onDragEnd={() => { setDraggingPageId(null); setDragOverPageId(null); }}
+            >
+              <button className="page-tab" type="button" onClick={() => setActivePageId(page.id)}>
+                <LayoutGrid size={15} />
+                <span>{page.name}</span>
+                <small>{pageServiceCount(page.id)}</small>
+              </button>
+              {manageMode && (
+                <button className="page-edit" type="button" aria-label={`Edit ${page.name} page`} title={`Edit ${page.name} page`} onClick={() => setEditingPage(page)}>
+                  <Pencil size={13} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {manageMode && <button className="add-page-button" type="button" onClick={() => setEditingPage(null)}><Plus size={15} /> Add page</button>}
+      </nav>
+
       <section className="toolbar" aria-label="Dashboard tools">
         <Search size={18} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search services" aria-label="Search services" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${activePage?.name ?? "services"}`} aria-label="Search services" />
         <span className="service-count">{filtered.length} service{filtered.length === 1 ? "" : "s"}</span>
         <button className="refresh-button" type="button" disabled={statusLoading || insightLoading} onClick={() => void refreshTelemetry()} title="Refresh service status">
           <RefreshCw className={statusLoading || insightLoading ? "spin" : ""} size={16} />
@@ -675,7 +956,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       {manageMode && (
         <div className="manage-hint">
           <GripVertical size={16} />
-          <span>{query.trim() ? "Clear search to drag cards. Use the star to pin favorites and the pencil to change card size." : "Drag cards to reorder within a category. Use the star to pin favorites and the pencil to change card size."}</span>
+          <span>{query.trim() ? "Clear search to reorder. Manage mode also lets you arrange pages and categories." : "Drag page tabs, category headers, and cards to arrange the dashboard. Stars pin favorite cards."}</span>
         </div>
       )}
 
@@ -683,72 +964,110 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
       {!loading && filtered.length === 0 && !error && (
         <section className="empty-state">
-          <div className="empty-icon"><Settings size={28} /></div>
-          <h2>{services.length === 0 ? "Build your dashboard" : "No matching services"}</h2>
-          <p>{services.length === 0 ? "Add your first self-hosted service, server tool, or generic link." : "Try a different search or add another service."}</p>
-          {services.length === 0 && <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add first service</button>}
+          <div className="empty-icon"><LayoutGrid size={28} /></div>
+          <h2>{services.length === 0 ? "Build your dashboard" : query.trim() ? "No matching services" : `${activePage?.name ?? "This page"} is empty`}</h2>
+          <p>{services.length === 0 ? "Add your first self-hosted service, server tool, or generic link." : query.trim() ? "Try a different search or add another service." : "Add services here or move an existing card to this page from its edit screen."}</p>
+          {!query.trim() && <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add service</button>}
         </section>
       )}
 
-      {(Object.entries(groups) as [string, Service[]][]).map(([category, categoryServices]) => (
-        <section key={category} className="section">
-          <div className="section-title"><Server size={18} /><h2>{category}</h2></div>
-          <div className="grid">
-            {categoryServices.map((service) => {
-              const serviceStatus = statusPresentation(service);
-              const insight = insights[service.id];
-              return (
-                <article
-                  className={`card card-${service.card_size} ${manageMode ? "managing-card" : ""} ${service.favorite ? "favorite-card" : ""} ${!service.enabled ? "disabled-card" : ""} ${serviceStatus.state === "offline" ? "offline-card" : ""} ${dragOverId === service.id ? "drag-over" : ""}`}
-                  key={service.id}
-                  draggable={manageMode && !query.trim()}
-                  onDragStart={(event) => {
-                    if (!manageMode || query.trim()) { event.preventDefault(); return; }
-                    setDragging({ id: service.id, category: service.category, favorite: service.favorite });
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", String(service.id));
-                  }}
-                  onDragOver={(event) => {
-                    if (dragging?.category === service.category && dragging.favorite === service.favorite && dragging.id !== service.id && !query.trim()) {
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      setDragOverId(service.id);
-                    }
-                  }}
-                  onDragLeave={() => dragOverId === service.id && setDragOverId(null)}
-                  onDrop={(event) => { event.preventDefault(); void dropService(service); }}
-                  onDragEnd={() => { setDragging(null); setDragOverId(null); }}
-                >
-                  <a className="card-link" href={service.url} target="_blank" rel="noreferrer" aria-label={`Open ${service.name}`} onClick={(event) => { if (manageMode) event.preventDefault(); }}>
-                    <div className="icon" aria-hidden="true"><ServiceIcon service={service} /></div>
-                    <div className="card-copy"><h3>{service.name}</h3><p>{TYPE_LABELS[service.type] ?? service.type}</p></div>
-                    <span className={`status status-${serviceStatus.state}`} title={serviceStatus.title}><span />{serviceStatus.label}</span>
-                    {insight && insight.state !== "none" && (
-                      <div className={`insight insight-${insight.state}`}>
-                        {insight.summary && <strong>{insight.summary}</strong>}
-                        {insight.secondary && <span>{insight.secondary}</span>}
-                        {insight.items.slice(0, 2).map((item) => <span className="insight-item" key={item}>{item}</span>)}
-                      </div>
-                    )}
-                    <ExternalLink className="external" size={17} />
-                  </a>
-                  {manageMode && (
-                    <div className="card-controls">
-                      <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : "Drag to reorder"} aria-hidden="true"><GripVertical size={15} /></span>
-                      <button className={`favorite-button ${service.favorite ? "active" : ""}`} type="button" onClick={() => void toggleFavorite(service)} aria-label={`${service.favorite ? "Unpin" : "Pin"} ${service.name}`} title={service.favorite ? "Unpin favorite" : "Pin favorite"}>
-                        <Star size={15} fill={service.favorite ? "currentColor" : "none"} />
-                      </button>
-                      <button className="edit-button" type="button" onClick={() => setEditing(service)} aria-label={`Edit ${service.name}`} title={`Edit ${service.name}`}>
-                        <Pencil size={15} />
-                      </button>
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      ))}
+      {groups.map(([category, categoryServices]) => {
+        const layout = pageCategories.find((item) => item.name.toLowerCase() === category.toLowerCase());
+        const collapsed = !query.trim() && (layout?.collapsed ?? false);
+        return (
+          <section
+            key={category}
+            className={`section category-section ${dragOverCategory === category ? "category-drag-over" : ""}`}
+          >
+            <div
+              className={`section-title category-header ${manageMode ? "category-manage" : ""}`}
+              draggable={manageMode && !query.trim()}
+              onDragStart={(event) => {
+                if (!manageMode || query.trim()) { event.preventDefault(); return; }
+                setDraggingCategory(category);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", `category:${category}`);
+              }}
+              onDragOver={(event) => {
+                if (draggingCategory && draggingCategory !== category && !query.trim()) {
+                  event.preventDefault();
+                  setDragOverCategory(category);
+                }
+              }}
+              onDragLeave={() => dragOverCategory === category && setDragOverCategory(null)}
+              onDrop={(event) => { event.preventDefault(); void dropCategory(category); }}
+              onDragEnd={() => { setDraggingCategory(null); setDragOverCategory(null); }}
+            >
+              {manageMode && <span className="category-drag-handle" title="Drag category to reorder"><GripVertical size={15} /></span>}
+              <Server size={18} />
+              <h2>{category}</h2>
+              <span className="category-count">{categoryServices.length}</span>
+              <button className="collapse-button" type="button" onClick={() => void toggleCategory(category)} aria-label={`${collapsed ? "Expand" : "Collapse"} ${category}`} title={collapsed ? "Expand category" : "Collapse category"}>
+                {collapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+              </button>
+            </div>
+            {!collapsed && (
+              <div className="grid">
+                {categoryServices.map((service) => {
+                  const serviceStatus = statusPresentation(service);
+                  const insight = insights[service.id];
+                  return (
+                    <article
+                      className={`card card-${service.card_size} ${manageMode ? "managing-card" : ""} ${service.favorite ? "favorite-card" : ""} ${!service.enabled ? "disabled-card" : ""} ${serviceStatus.state === "offline" ? "offline-card" : ""} ${dragOverId === service.id ? "drag-over" : ""}`}
+                      key={service.id}
+                      draggable={manageMode && !query.trim()}
+                      onDragStart={(event) => {
+                        if (!manageMode || query.trim()) { event.preventDefault(); return; }
+                        event.stopPropagation();
+                        setDragging({ id: service.id, page_id: service.page_id, category: service.category, favorite: service.favorite });
+                        setDraggingCategory(null);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", String(service.id));
+                      }}
+                      onDragOver={(event) => {
+                        if (dragging?.page_id === service.page_id && dragging.category === service.category && dragging.favorite === service.favorite && dragging.id !== service.id && !query.trim()) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          event.dataTransfer.dropEffect = "move";
+                          setDragOverId(service.id);
+                        }
+                      }}
+                      onDragLeave={() => dragOverId === service.id && setDragOverId(null)}
+                      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void dropService(service); }}
+                      onDragEnd={() => { setDragging(null); setDragOverId(null); }}
+                    >
+                      <a className="card-link" href={service.url} target="_blank" rel="noreferrer" aria-label={`Open ${service.name}`} onClick={(event) => { if (manageMode) event.preventDefault(); }}>
+                        <div className="icon" aria-hidden="true"><ServiceIcon service={service} /></div>
+                        <div className="card-copy"><h3>{service.name}</h3><p>{TYPE_LABELS[service.type] ?? service.type}</p></div>
+                        <span className={`status status-${serviceStatus.state}`} title={serviceStatus.title}><span />{serviceStatus.label}</span>
+                        {insight && insight.state !== "none" && (
+                          <div className={`insight insight-${insight.state}`}>
+                            {insight.summary && <strong>{insight.summary}</strong>}
+                            {insight.secondary && <span>{insight.secondary}</span>}
+                            {insight.items.slice(0, 2).map((item) => <span className="insight-item" key={item}>{item}</span>)}
+                          </div>
+                        )}
+                        <ExternalLink className="external" size={17} />
+                      </a>
+                      {manageMode && (
+                        <div className="card-controls">
+                          <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : "Drag to reorder"} aria-hidden="true"><GripVertical size={15} /></span>
+                          <button className={`favorite-button ${service.favorite ? "active" : ""}`} type="button" onClick={() => void toggleFavorite(service)} aria-label={`${service.favorite ? "Unpin" : "Pin"} ${service.name}`} title={service.favorite ? "Unpin favorite" : "Pin favorite"}>
+                            <Star size={15} fill={service.favorite ? "currentColor" : "none"} />
+                          </button>
+                          <button className="edit-button" type="button" onClick={() => setEditing(service)} aria-label={`Edit ${service.name}`} title={`Edit ${service.name}`}>
+                            <Pencil size={15} />
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        );
+      })}
 
       <footer className="app-footer">Homelab Dashboard v{APP_VERSION}</footer>
 
@@ -759,9 +1078,29 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           service={editing}
           template={selectedTemplate}
           csrfToken={auth.csrf_token}
+          pages={pages}
+          defaultPageId={activePageId}
           onClose={closeEditor}
-          onSaved={() => { closeEditor(); void loadServices(); void refreshTelemetry(); }}
-          onDeleted={() => { closeEditor(); void loadServices(); void refreshTelemetry(); }}
+          onSaved={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}
+          onDeleted={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}
+        />
+      )}
+
+      {editingPage !== undefined && (
+        <PageModal
+          page={editingPage}
+          serviceCount={editingPage ? pageServiceCount(editingPage.id) : 0}
+          csrfToken={auth.csrf_token}
+          onClose={() => setEditingPage(undefined)}
+          onSaved={(saved) => {
+            setEditingPage(undefined);
+            setActivePageId(saved.id);
+            void loadStructure();
+          }}
+          onDeleted={() => {
+            setEditingPage(undefined);
+            void loadStructure();
+          }}
         />
       )}
     </main>

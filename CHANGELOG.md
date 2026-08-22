@@ -4,6 +4,20 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.8.0] - 2026-08-22
+
+### Added
+- Multiple dashboard pages/tabs with persistent page assignment.
+- Create, rename, reorder, and safely delete empty non-default pages.
+- Persistent category ordering within each page.
+- Collapsible categories whose expanded/collapsed state survives reloads and devices.
+- Service page selection in the Add/Edit Service workflow.
+- Automatic v0.7 migration that creates a Home page and keeps every existing service/category in place.
+
+### Changed
+- Card ordering is now scoped by both dashboard page and category.
+- Dashboard structure is stored server-side so page/category organization follows the account across browsers.
+
 ## [0.7.0] - 2026-08-22
 
 ### Added

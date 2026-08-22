@@ -69,7 +69,16 @@
 - Backup/restore and update documentation
 - Community-tested installation matrix foundation
 
-## Milestone 8 — Reusable integration framework
+## Milestone 8 — Dashboard organization ✅
+
+- Multiple dashboard pages/tabs
+- Persistent page assignment for every service
+- Create, rename, reorder, and safely delete pages
+- Persistent category ordering per page
+- Collapsible categories with saved state
+- Automatic in-place migration from v0.7 to a default Home page
+
+## Milestone 9 — Reusable integration framework
 
 - Shared API credential configuration model
 - Service capability declarations
@@ -78,15 +87,15 @@
 - Infrastructure and monitoring adapters
 - Authentication capability metadata (native, API, OIDC/SSO, reverse-proxy)
 
-## Milestone 9 — Advanced dashboard builder
+## Milestone 10 — Advanced dashboard builder
 
-- Multiple pages
-- Theme editor
+- Theme editor and appearance presets
 - Desktop and mobile layout refinements
 - Import/export
-- Category ordering and page assignment
+- Category naming/icon customization
+- Dashboard cloning/templates
 
-## Milestone 10 — Open plugin platform
+## Milestone 11 — Open plugin platform
 
 - Versioned integration manifest
 - Plugin SDK and examples

@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.7.0
+ghcr.io/gatiger/homelab-dashboard:0.8.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -67,7 +67,9 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Searchable service catalog with common self-hosted applications
 - Recognizable bundled service logos with generic/custom fallbacks
 - Live Online / Degraded / Offline monitoring and response latency
-- Favorites, Compact/Standard/Wide cards, and drag-and-drop ordering
+- Favorites, Compact/Standard/Wide cards, and drag-and-drop card ordering
+- Multiple dashboard pages/tabs with persistent page assignment and ordering
+- Persisted category ordering and collapsible category sections
 - Optional Jellyfin server/session integration
 - Optional read-only local Docker host overview
 - Open-ended service identifiers for future templates/plugins
@@ -142,7 +144,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Project status / roadmap
 
-v0.7 focuses on making installation and upgrades approachable across common self-hosting environments. Future work includes richer service integrations, pages/tabs, category customization, themes, import/export, SSO options, and a contributor-friendly integration/plugin model.
+v0.8 adds multi-page dashboard organization, persistent category ordering, and collapsible sections. Future work includes richer service integrations, themes, import/export, SSO options, and a contributor-friendly integration/plugin model.
 
 See [CHANGELOG.md](CHANGELOG.md), [ROADMAP](docs/ROADMAP.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 

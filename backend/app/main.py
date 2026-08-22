@@ -34,7 +34,7 @@ STATUS_WORKERS = max(1, min(int(os.getenv("STATUS_WORKERS", "8")), 32))
 DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "").strip().rstrip("/")
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.7.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.8.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -75,6 +75,7 @@ class ServiceBase(BaseModel):
     type: str = Field(default="link", min_length=1, max_length=64)
     url: HttpUrl
     category: str = Field(default="General", min_length=1, max_length=80)
+    page_id: int = Field(default=1, ge=1)
     icon: str | None = Field(default=None, max_length=32)
     enabled: bool = True
     status_check: bool = True
@@ -133,6 +134,7 @@ class ServiceLayoutUpdate(BaseModel):
 
 class ServiceReorder(BaseModel):
     category: str = Field(min_length=1, max_length=80)
+    page_id: int = Field(default=1, ge=1)
     ordered_ids: list[int] = Field(min_length=1, max_length=500)
 
     @field_validator("category")
@@ -142,6 +144,72 @@ class ServiceReorder(BaseModel):
         if not value:
             raise ValueError("Category cannot be blank")
         return value
+
+
+class DashboardPageBase(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Page name cannot be blank")
+        return value
+
+
+class DashboardPageCreate(DashboardPageBase):
+    pass
+
+
+class DashboardPageUpdate(DashboardPageBase):
+    pass
+
+
+class DashboardPage(DashboardPageBase):
+    id: int
+    sort_order: int
+    is_default: bool
+    created_at: str
+    updated_at: str
+
+
+class PageReorder(BaseModel):
+    ordered_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class CategoryLayout(BaseModel):
+    page_id: int
+    name: str
+    sort_order: int
+    collapsed: bool
+
+
+class CategoryStateUpdate(BaseModel):
+    page_id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=80)
+    collapsed: bool
+
+    @field_validator("name")
+    @classmethod
+    def trim_category_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Category cannot be blank")
+        return value
+
+
+class CategoryReorder(BaseModel):
+    page_id: int = Field(ge=1)
+    ordered_names: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("ordered_names")
+    @classmethod
+    def validate_names(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("Category names cannot be blank")
+        return cleaned
 
 
 StatusState = Literal["online", "degraded", "offline", "disabled", "unchecked"]
@@ -183,6 +251,7 @@ def db() -> Iterator[sqlite3.Connection]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
     try:
         yield connection
         connection.commit()
@@ -203,6 +272,71 @@ def ensure_service_migrations(connection: sqlite3.Connection) -> None:
     if "sort_order" not in columns:
         connection.execute("ALTER TABLE services ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
         connection.execute("UPDATE services SET sort_order = id WHERE sort_order = 0")
+    if "page_id" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN page_id INTEGER NOT NULL DEFAULT 1")
+
+
+def ensure_default_page(connection: sqlite3.Connection) -> None:
+    now = iso_now()
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO dashboard_pages (id, name, sort_order, is_default, created_at, updated_at)
+        VALUES (1, 'Home', 1, 1, ?, ?)
+        """,
+        (now, now),
+    )
+
+
+def ensure_category_layouts(connection: sqlite3.Connection) -> None:
+    page_ids = [row["id"] for row in connection.execute("SELECT id FROM dashboard_pages").fetchall()]
+    for page_id in page_ids:
+        existing = {
+            row["name"].casefold()
+            for row in connection.execute("SELECT name FROM category_layouts WHERE page_id = ?", (page_id,)).fetchall()
+        }
+        categories = [
+            row["category"]
+            for row in connection.execute(
+                "SELECT category FROM services WHERE page_id = ? GROUP BY category COLLATE NOCASE ORDER BY category COLLATE NOCASE",
+                (page_id,),
+            ).fetchall()
+        ]
+        next_order = int(connection.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category_layouts WHERE page_id = ?",
+            (page_id,),
+        ).fetchone()[0])
+        for category in categories:
+            if category.casefold() in existing:
+                continue
+            connection.execute(
+                "INSERT INTO category_layouts (page_id, name, sort_order, collapsed) VALUES (?, ?, ?, 0)",
+                (page_id, category, next_order),
+            )
+            next_order += 1
+
+
+def ensure_category_layout(connection: sqlite3.Connection, page_id: int, category: str) -> None:
+    existing = connection.execute(
+        "SELECT 1 FROM category_layouts WHERE page_id = ? AND name = ?",
+        (page_id, category),
+    ).fetchone()
+    if existing:
+        return
+    sort_order = int(connection.execute(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category_layouts WHERE page_id = ?",
+        (page_id,),
+    ).fetchone()[0])
+    connection.execute(
+        "INSERT INTO category_layouts (page_id, name, sort_order, collapsed) VALUES (?, ?, ?, 0)",
+        (page_id, category, sort_order),
+    )
+
+
+def require_page(connection: sqlite3.Connection, page_id: int) -> sqlite3.Row:
+    row = connection.execute("SELECT * FROM dashboard_pages WHERE id = ?", (page_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard page not found")
+    return row
 
 
 def init_db() -> None:
@@ -227,12 +361,31 @@ def init_db() -> None:
                 FOREIGN KEY(user_id) REFERENCES admin_users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS dashboard_pages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS category_layouts (
+                page_id INTEGER NOT NULL,
+                name TEXT NOT NULL COLLATE NOCASE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                collapsed INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (page_id, name),
+                FOREIGN KEY(page_id) REFERENCES dashboard_pages(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS services (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 type TEXT NOT NULL DEFAULT 'link',
                 url TEXT NOT NULL,
                 category TEXT NOT NULL DEFAULT 'General',
+                page_id INTEGER NOT NULL DEFAULT 1,
                 icon TEXT,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 status_check INTEGER NOT NULL DEFAULT 1,
@@ -246,6 +399,8 @@ def init_db() -> None:
             """
         )
         ensure_service_migrations(connection)
+        ensure_default_page(connection)
+        ensure_category_layouts(connection)
         connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (iso_now(),))
 
 
@@ -382,6 +537,7 @@ def row_to_service(row: sqlite3.Row) -> Service:
         type=row["type"],
         url=row["url"],
         category=row["category"],
+        page_id=int(row["page_id"] or 1),
         icon=row["icon"],
         enabled=bool(row["enabled"]),
         status_check=bool(row["status_check"]),
@@ -393,6 +549,26 @@ def row_to_service(row: sqlite3.Row) -> Service:
         has_api_key=bool(row["api_key_encrypted"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def row_to_page(row: sqlite3.Row) -> DashboardPage:
+    return DashboardPage(
+        id=row["id"],
+        name=row["name"],
+        sort_order=int(row["sort_order"] or 0),
+        is_default=bool(row["is_default"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def row_to_category(row: sqlite3.Row) -> CategoryLayout:
+    return CategoryLayout(
+        page_id=int(row["page_id"]),
+        name=row["name"],
+        sort_order=int(row["sort_order"] or 0),
+        collapsed=bool(row["collapsed"]),
     )
 
 
@@ -413,7 +589,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.7.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.8.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -470,7 +646,7 @@ def probe_service(service: Service) -> ServiceStatus:
 
 
 def request_json(url: str, headers: dict[str, str] | None = None, verify_tls: bool = True) -> object:
-    request = Request(url, method="GET", headers={"User-Agent": "HomelabDashboard/0.7.0", "Accept": "application/json", **(headers or {})})
+    request = Request(url, method="GET", headers={"User-Agent": "HomelabDashboard/0.8.0", "Accept": "application/json", **(headers or {})})
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -598,7 +774,7 @@ def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.7.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.8.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -654,11 +830,154 @@ def logout(
     return response
 
 
+@app.get("/api/pages", response_model=list[DashboardPage])
+def list_pages(_: SessionUser = Depends(require_auth)) -> list[DashboardPage]:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT * FROM dashboard_pages ORDER BY sort_order, id"
+        ).fetchall()
+    return [row_to_page(row) for row in rows]
+
+
+@app.post("/api/pages", response_model=DashboardPage, status_code=status.HTTP_201_CREATED)
+def create_page(payload: DashboardPageCreate, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+    now = iso_now()
+    with db() as connection:
+        sort_order = int(connection.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM dashboard_pages"
+        ).fetchone()[0])
+        try:
+            cursor = connection.execute(
+                "INSERT INTO dashboard_pages (name, sort_order, is_default, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+                (payload.name, sort_order, now, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A page with that name already exists") from exc
+        row = connection.execute("SELECT * FROM dashboard_pages WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return row_to_page(row)
+
+
+@app.put("/api/pages/{page_id}", response_model=DashboardPage)
+def update_page(page_id: int, payload: DashboardPageUpdate, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+    with db() as connection:
+        require_page(connection, page_id)
+        try:
+            connection.execute(
+                "UPDATE dashboard_pages SET name = ?, updated_at = ? WHERE id = ?",
+                (payload.name, iso_now(), page_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A page with that name already exists") from exc
+        row = connection.execute("SELECT * FROM dashboard_pages WHERE id = ?", (page_id,)).fetchone()
+    return row_to_page(row)
+
+
+@app.post("/api/pages/reorder", response_model=list[DashboardPage])
+def reorder_pages(payload: PageReorder, _: SessionUser = Depends(require_write_auth)) -> list[DashboardPage]:
+    if len(payload.ordered_ids) != len(set(payload.ordered_ids)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate page ids in reorder request")
+    with db() as connection:
+        existing_ids = [row["id"] for row in connection.execute("SELECT id FROM dashboard_pages ORDER BY id").fetchall()]
+        if set(existing_ids) != set(payload.ordered_ids):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Page reorder must include every dashboard page")
+        now = iso_now()
+        for position, page_id in enumerate(payload.ordered_ids, start=1):
+            connection.execute(
+                "UPDATE dashboard_pages SET sort_order = ?, updated_at = ? WHERE id = ?",
+                (position, now, page_id),
+            )
+        rows = connection.execute("SELECT * FROM dashboard_pages ORDER BY sort_order, id").fetchall()
+    return [row_to_page(row) for row in rows]
+
+
+@app.delete("/api/pages/{page_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_page(page_id: int, _: SessionUser = Depends(require_write_auth)) -> Response:
+    with db() as connection:
+        page = require_page(connection, page_id)
+        if page["is_default"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The default Home page cannot be deleted")
+        service_count = int(connection.execute("SELECT COUNT(*) FROM services WHERE page_id = ?", (page_id,)).fetchone()[0])
+        if service_count:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Move or remove services from this page before deleting it")
+        connection.execute("DELETE FROM dashboard_pages WHERE id = ?", (page_id,))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/categories", response_model=list[CategoryLayout])
+def list_categories(_: SessionUser = Depends(require_auth)) -> list[CategoryLayout]:
+    with db() as connection:
+        ensure_category_layouts(connection)
+        rows = connection.execute(
+            """
+            SELECT c.page_id, c.name, c.sort_order, c.collapsed
+            FROM category_layouts c
+            WHERE EXISTS (
+                SELECT 1 FROM services s
+                WHERE s.page_id = c.page_id AND s.category = c.name COLLATE NOCASE
+            )
+            ORDER BY c.page_id, c.sort_order, c.name COLLATE NOCASE
+            """
+        ).fetchall()
+    return [row_to_category(row) for row in rows]
+
+
+@app.patch("/api/categories/state", response_model=CategoryLayout)
+def update_category_state(payload: CategoryStateUpdate, _: SessionUser = Depends(require_write_auth)) -> CategoryLayout:
+    with db() as connection:
+        require_page(connection, payload.page_id)
+        ensure_category_layout(connection, payload.page_id, payload.name)
+        connection.execute(
+            "UPDATE category_layouts SET collapsed = ? WHERE page_id = ? AND name = ?",
+            (int(payload.collapsed), payload.page_id, payload.name),
+        )
+        row = connection.execute(
+            "SELECT * FROM category_layouts WHERE page_id = ? AND name = ?",
+            (payload.page_id, payload.name),
+        ).fetchone()
+    return row_to_category(row)
+
+
+@app.post("/api/categories/reorder", response_model=list[CategoryLayout])
+def reorder_categories(payload: CategoryReorder, _: SessionUser = Depends(require_write_auth)) -> list[CategoryLayout]:
+    if len(payload.ordered_names) != len(set(name.casefold() for name in payload.ordered_names)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate category names in reorder request")
+    with db() as connection:
+        require_page(connection, payload.page_id)
+        ensure_category_layouts(connection)
+        current = [
+            row["category"]
+            for row in connection.execute(
+                "SELECT category FROM services WHERE page_id = ? GROUP BY category COLLATE NOCASE ORDER BY category COLLATE NOCASE",
+                (payload.page_id,),
+            ).fetchall()
+        ]
+        if {name.casefold() for name in current} != {name.casefold() for name in payload.ordered_names}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Category reorder must include every category on the page")
+        for position, name in enumerate(payload.ordered_names, start=1):
+            ensure_category_layout(connection, payload.page_id, name)
+            connection.execute(
+                "UPDATE category_layouts SET sort_order = ? WHERE page_id = ? AND name = ? COLLATE NOCASE",
+                (position, payload.page_id, name),
+            )
+        rows = connection.execute(
+            """
+            SELECT c.page_id, c.name, c.sort_order, c.collapsed
+            FROM category_layouts c
+            WHERE c.page_id = ? AND EXISTS (
+                SELECT 1 FROM services s WHERE s.page_id = c.page_id AND s.category = c.name COLLATE NOCASE
+            )
+            ORDER BY c.sort_order, c.name COLLATE NOCASE
+            """,
+            (payload.page_id,),
+        ).fetchall()
+    return [row_to_category(row) for row in rows]
+
+
 @app.get("/api/services", response_model=list[Service])
 def list_services(_: SessionUser = Depends(require_auth)) -> list[Service]:
     with db() as connection:
         rows = connection.execute(
-            "SELECT * FROM services WHERE enabled = 1 ORDER BY category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
+            "SELECT * FROM services WHERE enabled = 1 ORDER BY page_id, category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
         ).fetchall()
     return [row_to_service(row) for row in rows]
 
@@ -667,7 +986,7 @@ def list_services(_: SessionUser = Depends(require_auth)) -> list[Service]:
 def list_all_services(_: SessionUser = Depends(require_auth)) -> list[Service]:
     with db() as connection:
         rows = connection.execute(
-            "SELECT * FROM services ORDER BY category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
+            "SELECT * FROM services ORDER BY page_id, category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
         ).fetchall()
     return [row_to_service(row) for row in rows]
 
@@ -676,7 +995,7 @@ def list_all_services(_: SessionUser = Depends(require_auth)) -> list[Service]:
 def service_statuses(_: SessionUser = Depends(require_auth)) -> list[ServiceStatus]:
     with db() as connection:
         rows = connection.execute(
-            "SELECT * FROM services ORDER BY category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
+            "SELECT * FROM services ORDER BY page_id, category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
         ).fetchall()
     services = [row_to_service(row) for row in rows]
     if not services:
@@ -703,9 +1022,9 @@ def service_statuses(_: SessionUser = Depends(require_auth)) -> list[ServiceStat
 def service_insights(_: SessionUser = Depends(require_auth)) -> list[ServiceInsight]:
     with db() as connection:
         rows = connection.execute(
-            "SELECT * FROM services ORDER BY category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
+            "SELECT * FROM services ORDER BY page_id, category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
         ).fetchall()
-    relevant = [row for row in rows if row["type"] in {"jellyfin", "dockge"}]
+    relevant = [row for row in rows if row["type"] in {"jellyfin", "dockge", "docker-host"}]
     if not relevant:
         return []
     results: dict[int, ServiceInsight] = {}
@@ -724,22 +1043,25 @@ def service_insights(_: SessionUser = Depends(require_auth)) -> list[ServiceInsi
 def create_service(service: ServiceCreate, _: SessionUser = Depends(require_write_auth)) -> Service:
     now = iso_now()
     with db() as connection:
+        require_page(connection, service.page_id)
+        ensure_category_layout(connection, service.page_id, service.category)
         cursor = connection.execute(
             """
-            INSERT INTO services (name, type, url, category, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service.name,
                 service.type,
                 str(service.url),
                 service.category,
+                service.page_id,
                 service.icon,
                 int(service.enabled),
                 int(service.status_check),
                 int(service.favorite),
                 service.card_size,
-                int(connection.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE category = ?", (service.category,)).fetchone()[0]),
+                int(connection.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE page_id = ? AND category = ?", (service.page_id, service.category)).fetchone()[0]),
                 encrypt_secret(service.api_key),
                 now,
                 now,
@@ -753,24 +1075,26 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
 def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Depends(require_write_auth)) -> Service:
     now = iso_now()
     with db() as connection:
-        current = connection.execute("SELECT category, sort_order, api_key_encrypted FROM services WHERE id = ?", (service_id,)).fetchone()
+        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted FROM services WHERE id = ?", (service_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+        require_page(connection, service.page_id)
+        ensure_category_layout(connection, service.page_id, service.category)
         api_key_encrypted = current["api_key_encrypted"]
         if service.clear_api_key:
             api_key_encrypted = None
         elif service.api_key:
             api_key_encrypted = encrypt_secret(service.api_key)
         sort_order = service.sort_order
-        if service.category != current["category"]:
+        if service.category != current["category"] or service.page_id != current["page_id"]:
             sort_order = int(connection.execute(
-                "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE category = ?",
-                (service.category,),
+                "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE page_id = ? AND category = ?",
+                (service.page_id, service.category),
             ).fetchone()[0])
         connection.execute(
             """
             UPDATE services
-            SET name = ?, type = ?, url = ?, category = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, updated_at = ?
+            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -778,6 +1102,7 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
                 service.type,
                 str(service.url),
                 service.category,
+                service.page_id,
                 service.icon,
                 int(service.enabled),
                 int(service.status_check),
@@ -824,13 +1149,13 @@ def reorder_services(payload: ServiceReorder, _: SessionUser = Depends(require_w
     with db() as connection:
         placeholders = ",".join("?" for _ in payload.ordered_ids)
         rows = connection.execute(
-            f"SELECT id, category FROM services WHERE id IN ({placeholders})",
+            f"SELECT id, category, page_id FROM services WHERE id IN ({placeholders})",
             tuple(payload.ordered_ids),
         ).fetchall()
         if len(rows) != len(payload.ordered_ids):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more services were not found")
-        if any(row["category"] != payload.category for row in rows):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Services can only be reordered within the same category")
+        if any(row["category"] != payload.category or row["page_id"] != payload.page_id for row in rows):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Services can only be reordered within the same page and category")
         now = iso_now()
         for position, service_id in enumerate(payload.ordered_ids, start=1):
             connection.execute(
@@ -838,8 +1163,8 @@ def reorder_services(payload: ServiceReorder, _: SessionUser = Depends(require_w
                 (position, now, service_id),
             )
         ordered_rows = connection.execute(
-            "SELECT * FROM services WHERE category = ? ORDER BY sort_order, name COLLATE NOCASE",
-            (payload.category,),
+            "SELECT * FROM services WHERE page_id = ? AND category = ? ORDER BY sort_order, name COLLATE NOCASE",
+            (payload.page_id, payload.category),
         ).fetchall()
     return [row_to_service(row) for row in ordered_rows]
 
