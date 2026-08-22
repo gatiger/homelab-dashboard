@@ -4,6 +4,19 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.7.0] - 2026-08-22
+
+### Added
+- All-in-one production Docker image and automated GHCR publishing for amd64/arm64.
+- Universal production Compose file plus optional Docker-insight and local-build overlays.
+- Platform installation documentation for Docker Compose, Dockge, TrueNAS SCALE, Portainer, Unraid, Synology, and QNAP.
+- Backup/restore and update documentation.
+- Dedicated Docker Host service template.
+
+### Changed
+- Docker host insight is optional and no longer requires the base deployment to mount or proxy the Docker socket.
+- Docker Compose is now the reference deployment model; Dockge is documented as one optional management UI.
+
 ## [0.6.0] - 2026-08-22
 
 ### Added

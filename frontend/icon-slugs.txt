@@ -55,3 +55,4 @@ truenas
 unraid
 uptime-kuma
 vaultwarden
+docker-moby

@@ -75,7 +75,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "0.7.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -685,7 +685,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
         <section className="empty-state">
           <div className="empty-icon"><Settings size={28} /></div>
           <h2>{services.length === 0 ? "Build your dashboard" : "No matching services"}</h2>
-          <p>{services.length === 0 ? "Add your first Dockge-hosted service, server tool, or generic link." : "Try a different search or add another service."}</p>
+          <p>{services.length === 0 ? "Add your first self-hosted service, server tool, or generic link." : "Try a different search or add another service."}</p>
           {services.length === 0 && <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add first service</button>}
         </section>
       )}

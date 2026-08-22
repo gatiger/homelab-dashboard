@@ -67,6 +67,7 @@ export const SERVICE_CATALOG: CatalogEntry[] = [
   { type: "pocket-id", name: "Pocket ID", category: "Networking & Security", icon: "pocket-id", description: "Passkey-first OIDC identity provider", aliases: ["sso", "oidc", "identity", "passkey"] },
 
   // Infrastructure & container management
+  { type: "docker-host", name: "Docker Host", category: "Infrastructure", icon: "docker-moby", defaultPort: 2375, defaultScheme: "http", description: "Local Docker Engine overview (optional integration)", aliases: ["docker", "containers", "engine"], integration: "docker" },
   { type: "dockge", name: "Dockge", category: "Infrastructure", icon: "dockge", defaultPort: 5001, defaultScheme: "http", description: "Compose stack manager", aliases: ["docker", "compose"], integration: "docker" },
   { type: "portainer", name: "Portainer", category: "Infrastructure", icon: "portainer", defaultPort: 9443, defaultScheme: "https", description: "Container and Docker management", aliases: ["docker", "containers"] },
   { type: "truenas", name: "TrueNAS", category: "Infrastructure", icon: "truenas", defaultScheme: "https", description: "NAS and storage platform", aliases: ["nas", "storage"] },

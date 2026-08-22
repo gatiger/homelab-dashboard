@@ -1,6 +1,3 @@
-# Compatibility copy for platforms that look specifically for docker-compose.yml.
-# Canonical production file: compose.yaml
-
 name: homelab-dashboard
 
 services:

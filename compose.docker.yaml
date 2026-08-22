@@ -1,0 +1,26 @@
+# Optional local-Docker insight layer.
+# Use with: docker compose -f compose.yaml -f compose.docker.yaml up -d
+services:
+  socket-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:v0.5.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+
+  dashboard:
+    depends_on:
+      - socket-proxy
+    environment:
+      DOCKER_PROXY_URL: http://socket-proxy:2375
+    networks:
+      - default
+      - docker-api
+
+networks:
+  docker-api:
+    internal: true

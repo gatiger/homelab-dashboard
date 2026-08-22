@@ -58,7 +58,18 @@
 - Automatic in-place migration from v0.5
 - Manage-mode safeguards so clicking a card while arranging it does not launch the service
 
-## Milestone 7 — Reusable integration framework
+## Milestone 7 — Distribution and installation ✅
+
+- All-in-one production image
+- Automated multi-architecture GHCR publishing
+- Docker Compose reference installation
+- Docker host insight optional rather than required
+- Dedicated Docker Host service template
+- Dockge / TrueNAS / Portainer / Unraid / Synology / QNAP installation documentation
+- Backup/restore and update documentation
+- Community-tested installation matrix foundation
+
+## Milestone 8 — Reusable integration framework
 
 - Shared API credential configuration model
 - Service capability declarations
@@ -67,7 +78,7 @@
 - Infrastructure and monitoring adapters
 - Authentication capability metadata (native, API, OIDC/SSO, reverse-proxy)
 
-## Milestone 8 — Advanced dashboard builder
+## Milestone 9 — Advanced dashboard builder
 
 - Multiple pages
 - Theme editor
@@ -75,10 +86,16 @@
 - Import/export
 - Category ordering and page assignment
 
-## Milestone 9 — Open plugin platform
+## Milestone 10 — Open plugin platform
 
 - Versioned integration manifest
 - Plugin SDK and examples
 - Community integration registry
 - Role-based permissions
 - OIDC / Authentik / Authelia support
+
+## Distribution follow-ups
+
+- [ ] Community-tested installation badges/matrix
+- [ ] Unraid Community Applications template
+- [ ] Additional NAS/platform templates as contributors validate them

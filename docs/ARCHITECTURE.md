@@ -12,12 +12,12 @@
 
 ## Current layers
 
-- **Frontend shell:** React and TypeScript dashboard/editor.
+- **Production application container:** Nginx serves the React/TypeScript frontend and proxies `/api` to the local FastAPI process inside the same image. The source tree still keeps frontend and backend concerns separate for development.
 - **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata (identifier, name, category, icon, common port, description, aliases, and capability hints).
 - **Backend:** FastAPI authentication, configuration, health checks, secret storage, and integration adapters.
 - **Database:** SQLite in a persistent Docker volume.
 - **Integration adapters:** Service-specific backend functions for supported rich cards; unsupported catalog entries still work as generic monitored links.
-- **Docker access:** Restricted socket proxy on an internal network for read-only local Docker insight.
+- **Docker access (optional):** The base deployment has no Docker socket access. Users who enable local Docker insight add a restricted socket proxy on an internal network; the dashboard itself never receives the raw Docker socket.
 - **Reverse proxy:** Caddy, Traefik, Nginx, or another user-selected proxy.
 
 ## Service model
@@ -33,3 +33,8 @@ The catalog metadata will become the basis for a future versioned integration ma
 ## Layout model
 
 Layout preferences are stored with each configured service rather than only in browser local storage. `sort_order` controls card order within a category, `favorite` pins a card ahead of unpinned cards in that category, and `card_size` is one of `compact`, `standard`, or `wide`. This keeps a dashboard consistent across browsers and makes later multi-page/import-export features possible without redesigning the persistence layer.
+
+
+## Distribution model
+
+Stable releases publish a multi-architecture OCI image for `linux/amd64` and `linux/arm64` through GitHub Container Registry. `compose.yaml` is the reference production deployment. `compose.build.yaml` is a source-build override for contributors, and `compose.docker.yaml` adds the optional local-Docker insight layer. Platform-specific UIs such as Dockge, Portainer, TrueNAS Apps, Unraid, Synology Container Manager, and QNAP Container Station are deployment front ends rather than application dependencies.

@@ -31,10 +31,10 @@ SESSION_HOURS = int(os.getenv("SESSION_HOURS", "168"))
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
 STATUS_TIMEOUT = max(1.0, min(float(os.getenv("STATUS_TIMEOUT", "4")), 15.0))
 STATUS_WORKERS = max(1, min(int(os.getenv("STATUS_WORKERS", "8")), 32))
-DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "http://socket-proxy:2375").rstrip("/")
+DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "").strip().rstrip("/")
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.6.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.7.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -413,7 +413,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.6.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.7.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -470,7 +470,7 @@ def probe_service(service: Service) -> ServiceStatus:
 
 
 def request_json(url: str, headers: dict[str, str] | None = None, verify_tls: bool = True) -> object:
-    request = Request(url, method="GET", headers={"User-Agent": "HomelabDashboard/0.6.0", "Accept": "application/json", **(headers or {})})
+    request = Request(url, method="GET", headers={"User-Agent": "HomelabDashboard/0.7.0", "Accept": "application/json", **(headers or {})})
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -542,7 +542,15 @@ def jellyfin_insight(service: Service, encrypted_key: str | None) -> ServiceInsi
         return ServiceInsight(id=service.id, kind="jellyfin", state="unavailable", summary="Jellyfin integration unavailable", secondary=detail[:120])
 
 
-def docker_host_insight(service_id: int) -> ServiceInsight:
+def docker_host_insight(service_id: int, kind: str = "docker-host") -> ServiceInsight:
+    if not DOCKER_PROXY_URL:
+        return ServiceInsight(
+            id=service_id,
+            kind=kind,
+            state="setup",
+            summary="Docker host integration not enabled",
+            secondary="Enable the optional Docker socket proxy to show local container statistics",
+        )
     try:
         data = request_json(f"{DOCKER_PROXY_URL}/containers/json?all=1")
         if not isinstance(data, list):
@@ -566,7 +574,7 @@ def docker_host_insight(service_id: int) -> ServiceInsight:
         secondary = "All containers running" if stopped == 0 else f"{stopped} container{'s' if stopped != 1 else ''} stopped"
         return ServiceInsight(
             id=service_id,
-            kind="dockge",
+            kind=kind,
             state="ok",
             summary=f"{len(projects)} stack{'s' if len(projects) != 1 else ''} · {running}/{total} containers running",
             secondary=secondary,
@@ -574,7 +582,7 @@ def docker_host_insight(service_id: int) -> ServiceInsight:
         )
     except Exception as exc:  # noqa: BLE001
         detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
-        return ServiceInsight(id=service_id, kind="dockge", state="unavailable", summary="Docker host stats unavailable", secondary=detail[:120])
+        return ServiceInsight(id=service_id, kind=kind, state="unavailable", summary="Docker host stats unavailable", secondary=detail[:120])
 
 
 def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
@@ -583,14 +591,14 @@ def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
         return ServiceInsight(id=service.id, kind=service.type, state="none")
     if service.type == "jellyfin":
         return jellyfin_insight(service, row["api_key_encrypted"])
-    if service.type == "dockge":
-        return docker_host_insight(service.id)
+    if service.type in {"dockge", "docker-host"}:
+        return docker_host_insight(service.id, service.type)
     return ServiceInsight(id=service.id, kind=service.type, state="none")
 
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.6.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.7.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)

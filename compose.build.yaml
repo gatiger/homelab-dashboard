@@ -1,0 +1,9 @@
+# Developer/source-build override. Builds the all-in-one image locally.
+# Use with: docker compose -f compose.yaml -f compose.build.yaml up -d --build
+services:
+  dashboard:
+    image: homelab-dashboard:local
+    build:
+      context: .
+      args:
+        VERSION: local
