@@ -195,7 +195,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.13.0";
+const APP_VERSION = "0.13.1";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",

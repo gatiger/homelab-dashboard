@@ -44,7 +44,7 @@ UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 36
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.13.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.13.1")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -1196,7 +1196,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.13.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.13.1", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -1263,7 +1263,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.13.0", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": "HomelabDashboard/0.13.1", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -2530,7 +2530,7 @@ def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[Inte
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.13.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.13.1", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -2756,9 +2756,9 @@ def delete_widget(widget_id: int, _: SessionUser = Depends(require_write_auth)) 
 @app.get("/api/extensions", response_model=list[ExtensionDescriptor])
 def list_extensions(_: SessionUser = Depends(require_auth)) -> list[ExtensionDescriptor]:
     built_in = [
-        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.13.0", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.13.0", author="Homelab Dashboard", description="Clock, note, bookmarks, and system-summary dashboard widgets.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.13.0", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.13.1", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.13.1", author="Homelab Dashboard", description="Clock, note, bookmarks, and system-summary dashboard widgets.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.13.1", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
     ]
     with db() as connection:
         selected = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()

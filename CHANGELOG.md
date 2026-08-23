@@ -4,6 +4,12 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.13.1] - 2026-08-23
+
+### Fixed
+- Build the architecture-independent frontend stage on BuildKit's native build platform instead of under ARM64 QEMU emulation.
+- Prevent multi-architecture release publishing from stalling for hours during the ARM64 `npm install` step.
+
 ## [0.13.0] - 2026-08-23
 
 ### Added
