@@ -1205,7 +1205,7 @@ def validate_management_provider_id(provider_id: str) -> None:
     if provider_id == "none":
         return
     if provider_id not in MANAGEMENT_PROVIDERS:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Unsupported management provider: {provider_id}")
+        raise HTTPException(status_code=422, detail=f"Unsupported management provider: {provider_id}")
 
 
 class SessionUser(BaseModel):
