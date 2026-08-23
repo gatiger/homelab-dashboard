@@ -1,13 +1,15 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
   ChevronRight,
+  Download,
   ExternalLink,
   GripVertical,
   LayoutGrid,
   Link as LinkIcon,
   LogOut,
+  Palette,
   Pencil,
   Plus,
   RefreshCw,
@@ -16,10 +18,12 @@ import {
   Settings,
   Star,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import "./styles.css";
 import { CATALOG_BY_TYPE, CATALOG_CATEGORIES, SERVICE_CATALOG, catalogSearchText, urlPlaceholder, type CatalogEntry } from "./serviceCatalog";
+import { BUILTIN_THEMES, BUILTIN_THEME_BY_ID, THEME_TEMPLATE, applyTheme, resolveTheme, type ThemePackage } from "./themes";
 
 type AuthStatus = {
   setup_required: boolean;
@@ -78,6 +82,11 @@ type CategoryLayout = {
   collapsed: boolean;
 };
 
+type AppearanceSettings = {
+  theme_id: string;
+  custom_themes: ThemePackage[];
+};
+
 type ServiceInsight = {
   id: number;
   kind: string;
@@ -96,7 +105,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.8.0";
+const APP_VERSION = "0.9.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -588,6 +597,117 @@ function PageModal({
   );
 }
 
+function AppearanceModal({
+  appearance,
+  busy,
+  error,
+  onClose,
+  onSelect,
+  onImport,
+  onDelete,
+}: {
+  appearance: AppearanceSettings;
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onSelect: (themeId: string) => Promise<void>;
+  onImport: (theme: ThemePackage) => Promise<void>;
+  onDelete: (themeId: string) => Promise<void>;
+}) {
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  async function importFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as ThemePackage;
+      await onImport(parsed);
+    } catch {
+      window.alert("That file is not valid JSON. Download the theme template for the supported format.");
+    }
+  }
+
+  function downloadTemplate() {
+    const blob = new Blob([JSON.stringify(THEME_TEMPLATE, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "homelab-dashboard-theme-template.json";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  const systemDark = BUILTIN_THEME_BY_ID.dark;
+  const systemLight = BUILTIN_THEME_BY_ID.light;
+  const choices: { theme: ThemePackage; custom: boolean }[] = [
+    ...BUILTIN_THEMES.map((theme) => ({ theme, custom: false })),
+    ...appearance.custom_themes.map((theme) => ({ theme, custom: true })),
+  ];
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
+      <section className="modal appearance-modal" role="dialog" aria-modal="true" aria-labelledby="appearance-title">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">APPEARANCE</p>
+            <h2 id="appearance-title">Choose your dashboard theme</h2>
+            <p className="modal-subhead">Built-in themes are always available. Imported themes are validated visual-only packages and cannot run code.</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button>
+        </header>
+
+        <div className="appearance-tools">
+          <button className="secondary" type="button" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={16} /> Import theme</button>
+          <button className="secondary" type="button" onClick={downloadTemplate}><Download size={16} /> Theme template</button>
+          <input ref={fileInput} className="hidden-file" type="file" accept="application/json,.json" onChange={(event) => void importFile(event)} />
+          <span>Community theme format v1 · colors only · no CSS or JavaScript</span>
+        </div>
+
+        {error && <div className="notice appearance-error">{error}</div>}
+
+        <div className="theme-grid">
+          <article className={`theme-card ${appearance.theme_id === "system" ? "selected" : ""}`}>
+            <button className="theme-select" type="button" disabled={busy} onClick={() => void onSelect("system")}>
+              <div className="theme-preview system-preview" style={{ background: `linear-gradient(90deg, ${systemDark.colors.background} 0 50%, ${systemLight.colors.background} 50% 100%)` }}>
+                <span style={{ background: systemDark.colors.accent }} />
+                <span style={{ background: systemLight.colors.accent }} />
+              </div>
+              <div className="theme-copy"><strong>System</strong><span>Follows this device's light or dark preference.</span></div>
+              {appearance.theme_id === "system" && <span className="selected-badge">Selected</span>}
+            </button>
+          </article>
+
+          {choices.map(({ theme, custom }) => (
+            <article className={`theme-card ${appearance.theme_id === theme.id ? "selected" : ""}`} key={theme.id}>
+              <button className="theme-select" type="button" disabled={busy} onClick={() => void onSelect(theme.id)}>
+                <div className="theme-preview" style={{ background: `linear-gradient(145deg, ${theme.colors.surfaceAlt}, ${theme.colors.background})`, borderColor: theme.colors.border }}>
+                  <span style={{ background: theme.colors.accent }} />
+                  <span style={{ background: theme.colors.text }} />
+                  <span style={{ background: theme.colors.muted }} />
+                </div>
+                <div className="theme-copy">
+                  <strong>{theme.name}</strong>
+                  <span>{theme.description || `${theme.mode === "light" ? "Light" : "Dark"} theme by ${theme.author}`}</span>
+                  {custom && <small>{theme.author} · v{theme.version}</small>}
+                </div>
+                {appearance.theme_id === theme.id && <span className="selected-badge">Selected</span>}
+              </button>
+              {custom && (
+                <button className="theme-delete" type="button" disabled={busy} onClick={() => void onDelete(theme.id)} aria-label={`Delete ${theme.name}`} title={`Delete ${theme.name}`}>
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function inferredServiceType(service: Service): string | null {
   if (CATALOG_BY_TYPE[service.type]?.icon) return service.type;
   if (!["link", "other"].includes(service.type)) return service.type;
@@ -631,6 +751,10 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [dragOverCategory, setDragOverCategory] = useState<string | null>(null);
   const [draggingPageId, setDraggingPageId] = useState<number | null>(null);
   const [dragOverPageId, setDragOverPageId] = useState<number | null>(null);
+  const [appearance, setAppearance] = useState<AppearanceSettings>({ theme_id: "system", custom_themes: [] });
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [appearanceBusy, setAppearanceBusy] = useState(false);
+  const [appearanceError, setAppearanceError] = useState("");
 
   async function loadServices() {
     setLoading(true);
@@ -659,6 +783,14 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load dashboard layout.");
+    }
+  }
+
+  async function loadAppearance() {
+    try {
+      setAppearance(await api<AppearanceSettings>("/api/appearance"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load appearance settings.");
     }
   }
 
@@ -691,11 +823,21 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   useEffect(() => {
-    void Promise.all([loadServices(), loadStructure()]);
+    void Promise.all([loadServices(), loadStructure(), loadAppearance()]);
     void refreshTelemetry();
     const timer = window.setInterval(() => { void refreshTelemetry(); }, 30000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const applySelected = () => applyTheme(resolveTheme(appearance.theme_id, appearance.custom_themes), appearance.theme_id);
+    applySelected();
+    window.localStorage.setItem("homelab-dashboard-appearance", JSON.stringify(appearance));
+    if (appearance.theme_id !== "system") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    media.addEventListener("change", applySelected);
+    return () => media.removeEventListener("change", applySelected);
+  }, [appearance]);
 
   useEffect(() => {
     window.localStorage.setItem("homelab-dashboard-active-page", String(activePageId));
@@ -887,6 +1029,43 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setSelectedTemplate(null);
   }
 
+  async function selectTheme(themeId: string) {
+    setAppearanceBusy(true);
+    setAppearanceError("");
+    try {
+      setAppearance(await api<AppearanceSettings>("/api/appearance", { method: "PUT", body: JSON.stringify({ theme_id: themeId }) }, auth.csrf_token));
+    } catch (err) {
+      setAppearanceError(err instanceof Error ? err.message : "Unable to change theme.");
+    } finally {
+      setAppearanceBusy(false);
+    }
+  }
+
+  async function importTheme(theme: ThemePackage) {
+    setAppearanceBusy(true);
+    setAppearanceError("");
+    try {
+      setAppearance(await api<AppearanceSettings>("/api/themes", { method: "POST", body: JSON.stringify(theme) }, auth.csrf_token));
+    } catch (err) {
+      setAppearanceError(err instanceof Error ? err.message : "Unable to import theme.");
+    } finally {
+      setAppearanceBusy(false);
+    }
+  }
+
+  async function deleteTheme(themeId: string) {
+    if (!window.confirm("Delete this imported theme?")) return;
+    setAppearanceBusy(true);
+    setAppearanceError("");
+    try {
+      setAppearance(await api<AppearanceSettings>(`/api/themes/${encodeURIComponent(themeId)}`, { method: "DELETE" }, auth.csrf_token));
+    } catch (err) {
+      setAppearanceError(err instanceof Error ? err.message : "Unable to delete theme.");
+    } finally {
+      setAppearanceBusy(false);
+    }
+  }
+
   const pageServiceCount = (pageId: number) => services.filter((service) => service.page_id === pageId).length;
 
   return (
@@ -898,6 +1077,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           <p className="subhead">{activePage ? `${activePage.name} · your services and tools in one place.` : "Your services and tools in one place."}</p>
         </div>
         <div className="hero-actions">
+          <button className="secondary" type="button" onClick={() => { setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={17} /> Appearance</button>
           <button className={`secondary ${manageMode ? "active" : ""}`} type="button" onClick={() => setManageMode((value) => !value)}><Settings size={17} /> {manageMode ? "Done" : "Manage"}</button>
           <button className="secondary" type="button" onClick={onLogout}><LogOut size={17} /> Sign out</button>
           <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add service</button>
@@ -1071,6 +1251,18 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
       <footer className="app-footer">Homelab Dashboard v{APP_VERSION}</footer>
 
+      {appearanceOpen && (
+        <AppearanceModal
+          appearance={appearance}
+          busy={appearanceBusy}
+          error={appearanceError}
+          onClose={() => setAppearanceOpen(false)}
+          onSelect={selectTheme}
+          onImport={importTheme}
+          onDelete={deleteTheme}
+        />
+      )}
+
       {catalogOpen && <ServiceCatalogModal onClose={() => setCatalogOpen(false)} onSelect={chooseTemplate} />}
 
       {editing !== undefined && (
@@ -1129,6 +1321,16 @@ function App() {
   if (!auth) return <main className="auth-shell"><div className="loading">Loading dashboard…</div></main>;
   if (!auth.authenticated) return <AuthScreen status={auth} onAuthenticated={setAuth} />;
   return <Dashboard auth={auth} onLogout={logout} />;
+}
+
+try {
+  const cached = window.localStorage.getItem("homelab-dashboard-appearance");
+  if (cached) {
+    const parsed = JSON.parse(cached) as AppearanceSettings;
+    applyTheme(resolveTheme(parsed.theme_id, parsed.custom_themes ?? []), parsed.theme_id);
+  }
+} catch {
+  // Ignore stale or malformed local appearance cache; authenticated state will refresh it.
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);

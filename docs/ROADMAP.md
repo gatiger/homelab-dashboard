@@ -78,7 +78,17 @@
 - Collapsible categories with saved state
 - Automatic in-place migration from v0.7 to a default Home page
 
-## Milestone 9 — Reusable integration framework
+## Milestone 9 — Appearance and extension foundation ✅
+
+- System / Dark / Light appearance modes
+- Built-in Slate / Ocean / Forest / Violet / Amber color themes
+- Persistent appearance selection
+- Importable validated JSON theme packages
+- Theme authoring template and example
+- Shared design-token layer
+- First extension package validation/persistence/removal flow
+
+## Milestone 10 — Reusable integration framework
 
 - Shared API credential configuration model
 - Service capability declarations
@@ -87,21 +97,34 @@
 - Infrastructure and monitoring adapters
 - Authentication capability metadata (native, API, OIDC/SSO, reverse-proxy)
 
-## Milestone 10 — Advanced dashboard builder
+## Milestone 11 — Advanced dashboard builder
 
-- Theme editor and appearance presets
+- Custom theme editor
 - Desktop and mobile layout refinements
-- Import/export
+- Import/export of dashboard structure
 - Category naming/icon customization
 - Dashboard cloning/templates
+- Optional widgets
 
-## Milestone 11 — Open plugin platform
+## Milestone 12 — Open extension platform
 
-- Versioned integration manifest
+- Versioned extension manifest
+- Permission/capability model
 - Plugin SDK and examples
-- Community integration registry
+- Community extension registry
 - Role-based permissions
 - OIDC / Authentik / Authelia support
+
+## Future optional modules
+
+### 3D Printer Center
+
+- Provider-adapter architecture with a shared printer status/control model
+- Moonraker adapter for Klipper / Mainsail / Fluidd
+- OctoPrint adapter for non-Klipper printers
+- Bambuddy adapter for Bambu Lab printers via Bambuddy's external API
+- Multi-printer/farm overview, progress, temperatures, camera, and job state
+- Monitoring-only permissions by default; pause/resume/cancel, heater/motion, file upload, macros, and raw G-code opt-in separately where supported
 
 ## Distribution follow-ups
 

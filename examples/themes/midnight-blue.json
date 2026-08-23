@@ -1,0 +1,31 @@
+{
+  "format": "homelab-dashboard-theme",
+  "schema_version": 1,
+  "id": "midnight-blue",
+  "name": "Midnight Blue",
+  "version": "1.0.0",
+  "author": "Example Author",
+  "description": "Example custom theme for Homelab Dashboard.",
+  "mode": "dark",
+  "colors": {
+    "background": "#050914",
+    "backgroundAccent": "#102a56",
+    "surface": "#0a1220",
+    "surfaceAlt": "#101b2e",
+    "surfaceHover": "#172640",
+    "surfaceInset": "#02050b",
+    "border": "#30415f",
+    "borderSoft": "#24334c",
+    "borderStrong": "#465c82",
+    "text": "#f5f9ff",
+    "textSecondary": "#ced9ea",
+    "muted": "#91a4bf",
+    "subtle": "#667b99",
+    "accent": "#3b82f6",
+    "accentHover": "#2563eb",
+    "accentStrong": "#1d4ed8",
+    "accentSoft": "#102a56",
+    "accentLight": "#60a5fa",
+    "accentText": "#dbeafe"
+  }
+}

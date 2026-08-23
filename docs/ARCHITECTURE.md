@@ -9,13 +9,15 @@
 5. Installation should not require hand-editing YAML after startup.
 6. The built-in catalog represents common self-hosted use cases, not one maintainer's personal stack.
 7. New service identifiers should not require a database schema change.
+8. Visual extensions must not execute code or inherit infrastructure/credential access.
 
 ## Current layers
 
 - **Production application container:** Nginx serves the React/TypeScript frontend and proxies `/api` to the local FastAPI process inside the same image. The source tree still keeps frontend and backend concerns separate for development.
 - **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata (identifier, name, category, icon, common port, description, aliases, and capability hints).
 - **Backend:** FastAPI authentication, configuration, health checks, secret storage, and integration adapters.
-- **Database:** SQLite in a persistent Docker volume.
+- **Database:** SQLite in a persistent Docker volume. Appearance selection and imported theme manifests are stored alongside dashboard configuration.
+- **Theme layer:** Frontend components consume validated design tokens. Built-in and imported themes share the same data shape; imported theme packages are non-executable JSON.
 - **Integration adapters:** Service-specific backend functions for supported rich cards; unsupported catalog entries still work as generic monitored links.
 - **Docker access (optional):** The base deployment has no Docker socket access. Users who enable local Docker insight add a restricted socket proxy on an internal network; the dashboard itself never receives the raw Docker socket.
 - **Reverse proxy:** Caddy, Traefik, Nginx, or another user-selected proxy.
@@ -28,7 +30,9 @@ The catalog is intentionally separate from configured services. A catalog entry 
 
 ## Extension path
 
-The catalog metadata will become the basis for a future versioned integration manifest. Rich integrations can declare capabilities (status, metrics, activity, controls, authentication methods) without requiring every catalog entry to ship custom backend code.
+v0.9 establishes the first versioned extension-shaped package: non-executable theme manifests. The same package-management principles will later expand to catalog packs, widgets, integration adapters, and authentication adapters with explicit capability declarations.
+
+The catalog metadata will become the basis for future versioned integration manifests. Rich integrations can declare capabilities (status, metrics, activity, controls, authentication methods) without requiring every catalog entry to ship custom backend code. See `docs/extensions/architecture.md`.
 
 ## Layout model
 

@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.8.0
+ghcr.io/gatiger/homelab-dashboard:0.9.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -72,7 +72,16 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Persisted category ordering and collapsible category sections
 - Optional Jellyfin server/session integration
 - Optional read-only local Docker host overview
+- System, light/dark, and multiple color themes with persistent appearance settings
+- Safe importable JSON theme extensions with no executable code
 - Open-ended service identifiers for future templates/plugins
+
+
+## Themes and extensions
+
+Choose **Appearance** to use System, Dark, Light, Slate, Ocean, Forest, Violet, or Amber. The System option follows the current device light/dark preference.
+
+Community themes can be imported as validated JSON packages. Theme extensions contain approved color tokens only and cannot execute CSS/JavaScript or access network services, Docker, files, or stored credentials. See [Theme extensions](docs/extensions/themes.md) and the broader [extension architecture](docs/extensions/architecture.md).
 
 ## Service catalog
 
@@ -139,12 +148,13 @@ Open `http://localhost:5173`.
 - State-changing requests require a CSRF token.
 - Jellyfin API keys are encrypted at rest and are never returned after storage.
 - Docker access is absent by default. The optional integration uses a restricted internal socket proxy with POST operations disabled.
+- Imported themes are validated data-only manifests; they cannot contain executable CSS or JavaScript.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Project status / roadmap
 
-v0.8 adds multi-page dashboard organization, persistent category ordering, and collapsible sections. Future work includes richer service integrations, themes, import/export, SSO options, and a contributor-friendly integration/plugin model.
+v0.9 adds persistent appearance themes and the first validated extension package format. Future work includes richer service integrations, widgets, broader import/export, SSO options, and a permission-aware plugin model.
 
 See [CHANGELOG.md](CHANGELOG.md), [ROADMAP](docs/ROADMAP.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 

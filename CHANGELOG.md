@@ -4,6 +4,21 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.9.0] - 2026-08-22
+
+### Added
+- System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber appearance themes.
+- Persistent server-side appearance selection.
+- Validated importable JSON theme packages and downloadable authoring template.
+- Theme-extension and future extension-architecture documentation.
+
+### Changed
+- Dashboard styling now uses reusable design tokens so themes can restyle shared components consistently.
+- Stable GHCR publishing is release-tag driven rather than automatically publishing a multi-architecture image on every `main` push.
+
+### Fixed
+- Removed a duplicated service-icon element from the v0.8 card renderer.
+
 ## [0.8.0] - 2026-08-22
 
 ### Added

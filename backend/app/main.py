@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sqlite3
 import ssl
@@ -34,7 +35,7 @@ STATUS_WORKERS = max(1, min(int(os.getenv("STATUS_WORKERS", "8")), 32))
 DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "").strip().rstrip("/")
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.8.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.9.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -212,6 +213,101 @@ class CategoryReorder(BaseModel):
         return cleaned
 
 
+HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+THEME_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
+THEME_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$")
+BUILTIN_THEME_IDS = {"system", "dark", "light", "slate", "ocean", "forest", "violet", "amber"}
+
+
+class ThemeColors(BaseModel):
+    background: str
+    backgroundAccent: str
+    surface: str
+    surfaceAlt: str
+    surfaceHover: str
+    surfaceInset: str
+    border: str
+    borderSoft: str
+    borderStrong: str
+    text: str
+    textSecondary: str
+    muted: str
+    subtle: str
+    accent: str
+    accentHover: str
+    accentStrong: str
+    accentSoft: str
+    accentLight: str
+    accentText: str
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def validate_color(cls, value: str) -> str:
+        if not isinstance(value, str) or not HEX_COLOR.fullmatch(value.strip()):
+            raise ValueError("Theme colors must use six-digit hex values such as #3b82f6")
+        return value.strip().lower()
+
+
+class ThemePackage(BaseModel):
+    format: Literal["homelab-dashboard-theme"] = "homelab-dashboard-theme"
+    schema_version: Literal[1] = 1
+    id: str = Field(min_length=2, max_length=40)
+    name: str = Field(min_length=1, max_length=80)
+    version: str = Field(min_length=5, max_length=40)
+    author: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=240)
+    mode: Literal["dark", "light"]
+    colors: ThemeColors
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not THEME_ID.fullmatch(value):
+            raise ValueError("Theme id must use lowercase letters, numbers, and hyphens")
+        if value in BUILTIN_THEME_IDS:
+            raise ValueError("Theme id conflicts with a built-in theme")
+        return value
+
+    @field_validator("name", "author")
+    @classmethod
+    def trim_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: str) -> str:
+        value = value.strip()
+        if not THEME_VERSION.fullmatch(value):
+            raise ValueError("Theme version must look like 1.0.0")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def trim_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class AppearanceUpdate(BaseModel):
+    theme_id: str = Field(min_length=2, max_length=40)
+
+    @field_validator("theme_id")
+    @classmethod
+    def normalize_theme_id(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class AppearanceSettings(BaseModel):
+    theme_id: str
+    custom_themes: list[ThemePackage] = Field(default_factory=list)
+
+
 StatusState = Literal["online", "degraded", "offline", "disabled", "unchecked"]
 
 
@@ -379,6 +475,18 @@ def init_db() -> None:
                 FOREIGN KEY(page_id) REFERENCES dashboard_pages(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS custom_themes (
+                id TEXT PRIMARY KEY,
+                manifest_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS services (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -400,6 +508,7 @@ def init_db() -> None:
         )
         ensure_service_migrations(connection)
         ensure_default_page(connection)
+        connection.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme_id', 'system')")
         ensure_category_layouts(connection)
         connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (iso_now(),))
 
@@ -572,6 +681,24 @@ def row_to_category(row: sqlite3.Row) -> CategoryLayout:
     )
 
 
+def row_to_theme(row: sqlite3.Row) -> ThemePackage:
+    try:
+        return ThemePackage.model_validate_json(row["manifest_json"])
+    except Exception as exc:  # noqa: BLE001 - invalid stored extensions should not crash unrelated routes.
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Stored theme {row['id']} is invalid") from exc
+
+
+def list_theme_rows(connection: sqlite3.Connection) -> list[ThemePackage]:
+    rows = connection.execute("SELECT * FROM custom_themes ORDER BY id COLLATE NOCASE").fetchall()
+    return [row_to_theme(row) for row in rows]
+
+
+def theme_exists(connection: sqlite3.Connection, theme_id: str) -> bool:
+    if theme_id in BUILTIN_THEME_IDS:
+        return True
+    return connection.execute("SELECT 1 FROM custom_themes WHERE id = ?", (theme_id,)).fetchone() is not None
+
+
 def is_private_hostname(hostname: str | None) -> bool:
     if not hostname:
         return False
@@ -589,7 +716,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.8.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.9.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -646,7 +773,7 @@ def probe_service(service: Service) -> ServiceStatus:
 
 
 def request_json(url: str, headers: dict[str, str] | None = None, verify_tls: bool = True) -> object:
-    request = Request(url, method="GET", headers={"User-Agent": "HomelabDashboard/0.8.0", "Accept": "application/json", **(headers or {})})
+    request = Request(url, method="GET", headers={"User-Agent": "HomelabDashboard/0.9.0", "Accept": "application/json", **(headers or {})})
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -774,7 +901,7 @@ def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.8.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.9.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -828,6 +955,67 @@ def logout(
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
+
+
+@app.get("/api/appearance", response_model=AppearanceSettings)
+def get_appearance(_: SessionUser = Depends(require_auth)) -> AppearanceSettings:
+    with db() as connection:
+        row = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()
+        theme_id = row["value"] if row else "system"
+        if not theme_exists(connection, theme_id):
+            theme_id = "system"
+            connection.execute("INSERT INTO app_settings (key, value) VALUES ('theme_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (theme_id,))
+        custom_themes = list_theme_rows(connection)
+    return AppearanceSettings(theme_id=theme_id, custom_themes=custom_themes)
+
+
+@app.put("/api/appearance", response_model=AppearanceSettings)
+def update_appearance(payload: AppearanceUpdate, _: SessionUser = Depends(require_write_auth)) -> AppearanceSettings:
+    with db() as connection:
+        if not theme_exists(connection, payload.theme_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Theme not found")
+        connection.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('theme_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (payload.theme_id,),
+        )
+        custom_themes = list_theme_rows(connection)
+    return AppearanceSettings(theme_id=payload.theme_id, custom_themes=custom_themes)
+
+
+@app.post("/api/themes", response_model=AppearanceSettings, status_code=status.HTTP_201_CREATED)
+def import_theme(payload: ThemePackage, _: SessionUser = Depends(require_write_auth)) -> AppearanceSettings:
+    now = iso_now()
+    with db() as connection:
+        if connection.execute("SELECT 1 FROM custom_themes WHERE id = ?", (payload.id,)).fetchone():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A custom theme with that id already exists")
+        connection.execute(
+            "INSERT INTO custom_themes (id, manifest_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (payload.id, payload.model_dump_json(), now, now),
+        )
+        row = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()
+        theme_id = row["value"] if row else "system"
+        custom_themes = list_theme_rows(connection)
+    return AppearanceSettings(theme_id=theme_id, custom_themes=custom_themes)
+
+
+@app.delete("/api/themes/{theme_id}", response_model=AppearanceSettings)
+def delete_theme(theme_id: str, _: SessionUser = Depends(require_write_auth)) -> AppearanceSettings:
+    theme_id = theme_id.strip().lower()
+    if theme_id in BUILTIN_THEME_IDS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Built-in themes cannot be deleted")
+    with db() as connection:
+        result = connection.execute("DELETE FROM custom_themes WHERE id = ?", (theme_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Theme not found")
+        row = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()
+        selected = row["value"] if row else "system"
+        if selected == theme_id:
+            selected = "system"
+            connection.execute(
+                "INSERT INTO app_settings (key, value) VALUES ('theme_id', 'system') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+        custom_themes = list_theme_rows(connection)
+    return AppearanceSettings(theme_id=selected, custom_themes=custom_themes)
 
 
 @app.get("/api/pages", response_model=list[DashboardPage])

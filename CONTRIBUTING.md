@@ -20,3 +20,9 @@ Thanks for helping improve the project.
 5. Submit a pull request explaining the problem and solution.
 
 Until the plugin contract is finalized, open an issue before building a large integration.
+
+## Theme contributions
+
+Theme packages should use the documented v1 JSON format in `docs/extensions/themes.md`. Community themes must not depend on external scripts, CSS, fonts, or network resources. Keep theme IDs stable and use semantic versioning for updates.
+
+The repository includes `examples/themes/midnight-blue.json` as a starting point.
