@@ -301,3 +301,18 @@ h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1; margin: 0; letter-spacin
   .theme-grid { grid-template-columns: 1fr; padding-left: 16px; padding-right: 16px; }
   .appearance-tools { padding-left: 16px; padding-right: 16px; }
 }
+
+/* v0.10 integration activity/progress */
+.credential-note { color: var(--theme-subtle); margin-top: -4px; }
+.activity-block { display: grid; gap: 6px; margin-top: 5px; padding-top: 8px; border-top: 1px solid var(--theme-border-soft); min-width: 0; }
+.activity-heading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; min-width: 0; }
+.activity-heading strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--theme-text); font-size: .78rem; }
+.activity-operation { padding: 2px 6px; border-radius: 999px; background: var(--theme-accent-soft); color: var(--theme-accent-text); font-size: .62rem; font-weight: 800; letter-spacing: .045em; text-transform: uppercase; }
+.activity-percent { color: var(--theme-text-secondary); font-variant-numeric: tabular-nums; font-size: .72rem; font-weight: 700; }
+.activity-track { position: relative; height: 7px; overflow: hidden; border-radius: 999px; background: var(--theme-surface-alt); border: 1px solid var(--theme-border-soft); }
+.activity-bar { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: var(--theme-accent); transition: width .35s ease; }
+.activity-track.indeterminate .activity-bar { width: 38%; animation: activity-indeterminate 1.35s ease-in-out infinite; }
+.activity-meta { display: flex; flex-wrap: wrap; column-gap: 9px; row-gap: 2px; color: var(--theme-subtle); font-size: .68rem; }
+.activity-meta span + span::before { content: "·"; margin-right: 9px; color: var(--theme-border-strong); }
+@keyframes activity-indeterminate { 0% { transform: translateX(-120%); } 55% { transform: translateX(120%); } 100% { transform: translateX(260%); } }
+@media (prefers-reduced-motion: reduce) { .activity-track.indeterminate .activity-bar { animation: none; width: 55%; } }

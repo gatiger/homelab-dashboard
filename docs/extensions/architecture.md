@@ -1,6 +1,6 @@
 # Extension architecture direction
 
-v0.9 establishes the first extension-shaped feature: validated, importable theme packages.
+v0.9 established the first extension-shaped feature: validated, importable theme packages. v0.10 adds a reusable integration descriptor/capability model and normalized service activity records; built-in adapters still ship with core for now, but their contract is being shaped so later community adapters can plug into the same UI safely.
 
 The long-term extension system is intended to support several capability classes without requiring users to edit Homelab Dashboard source code:
 

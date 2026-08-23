@@ -7,7 +7,7 @@ export type CatalogEntry = {
   defaultScheme?: "http" | "https";
   description: string;
   aliases?: string[];
-  integration?: "jellyfin" | "docker" | null;
+  integration?: "jellyfin" | "docker" | "api" | "credentials" | null;
 };
 
 export const SERVICE_CATALOG: CatalogEntry[] = [
@@ -15,12 +15,12 @@ export const SERVICE_CATALOG: CatalogEntry[] = [
   { type: "jellyfin", name: "Jellyfin", category: "Media", icon: "jellyfin", defaultPort: 8096, defaultScheme: "http", description: "Open-source media server", aliases: ["movies", "tv", "streaming"], integration: "jellyfin" },
   { type: "plex", name: "Plex", category: "Media", icon: "plex", defaultPort: 32400, defaultScheme: "http", description: "Media server and streaming platform", aliases: ["movies", "tv", "streaming"] },
   { type: "emby", name: "Emby", category: "Media", icon: "emby", defaultPort: 8096, defaultScheme: "http", description: "Personal media server", aliases: ["movies", "tv", "streaming"] },
-  { type: "sonarr", name: "Sonarr", category: "Media", icon: "sonarr", defaultPort: 8989, defaultScheme: "http", description: "TV series management and automation", aliases: ["servarr", "tv"] },
-  { type: "radarr", name: "Radarr", category: "Media", icon: "radarr", defaultPort: 7878, defaultScheme: "http", description: "Movie management and automation", aliases: ["servarr", "movies"] },
+  { type: "sonarr", name: "Sonarr", category: "Media", icon: "sonarr", defaultPort: 8989, defaultScheme: "http", description: "TV series management and automation", aliases: ["servarr", "tv"], integration: "api" },
+  { type: "radarr", name: "Radarr", category: "Media", icon: "radarr", defaultPort: 7878, defaultScheme: "http", description: "Movie management and automation", aliases: ["servarr", "movies"], integration: "api" },
   { type: "lidarr", name: "Lidarr", category: "Media", icon: "lidarr", defaultPort: 8686, defaultScheme: "http", description: "Music collection management", aliases: ["servarr", "music"] },
   { type: "readarr", name: "Readarr", category: "Media", icon: "readarr", defaultPort: 8787, defaultScheme: "http", description: "Book and ebook management", aliases: ["servarr", "books"] },
   { type: "bazarr", name: "Bazarr", category: "Media", icon: "bazarr", defaultPort: 6767, defaultScheme: "http", description: "Subtitle management for Sonarr and Radarr", aliases: ["subtitles", "servarr"] },
-  { type: "prowlarr", name: "Prowlarr", category: "Media", icon: "prowlarr", defaultPort: 9696, defaultScheme: "http", description: "Indexer manager and proxy", aliases: ["servarr", "indexers"] },
+  { type: "prowlarr", name: "Prowlarr", category: "Media", icon: "prowlarr", defaultPort: 9696, defaultScheme: "http", description: "Indexer manager and proxy", aliases: ["servarr", "indexers"], integration: "api" },
   { type: "overseerr", name: "Overseerr", category: "Media", icon: "overseerr", defaultPort: 5055, defaultScheme: "http", description: "Media request and discovery manager", aliases: ["requests", "plex"] },
   { type: "jellyseerr", name: "Jellyseerr", category: "Media", icon: "jellyseerr", defaultPort: 5055, defaultScheme: "http", description: "Media request manager for Jellyfin and Emby", aliases: ["requests", "jellyfin", "emby"] },
   { type: "seerr", name: "Seerr", category: "Media", icon: "seerr", defaultPort: 5055, defaultScheme: "http", description: "Media request and discovery manager", aliases: ["jellyseerr", "requests"] },
@@ -31,14 +31,14 @@ export const SERVICE_CATALOG: CatalogEntry[] = [
   { type: "calibre-web", name: "Calibre-Web", category: "Media", icon: "calibre-web", defaultPort: 8083, defaultScheme: "http", description: "Web interface for ebook libraries", aliases: ["ebooks", "books", "calibre"] },
 
   // Download clients
-  { type: "qbittorrent", name: "qBittorrent", category: "Downloads", icon: "qbittorrent", defaultPort: 8080, defaultScheme: "http", description: "BitTorrent client with web UI", aliases: ["torrent", "downloads"] },
+  { type: "qbittorrent", name: "qBittorrent", category: "Downloads", icon: "qbittorrent", defaultPort: 8080, defaultScheme: "http", description: "BitTorrent client with web UI", aliases: ["torrent", "downloads"], integration: "credentials" },
   { type: "transmission", name: "Transmission", category: "Downloads", icon: "transmission", defaultPort: 9091, defaultScheme: "http", description: "Lightweight BitTorrent client", aliases: ["torrent", "downloads"] },
   { type: "deluge", name: "Deluge", category: "Downloads", icon: "deluge", defaultPort: 8112, defaultScheme: "http", description: "BitTorrent client with web UI", aliases: ["torrent", "downloads"] },
-  { type: "sabnzbd", name: "SABnzbd", category: "Downloads", icon: "sabnzbd", defaultPort: 8080, defaultScheme: "http", description: "Usenet binary downloader", aliases: ["usenet", "nzb"] },
+  { type: "sabnzbd", name: "SABnzbd", category: "Downloads", icon: "sabnzbd", defaultPort: 8080, defaultScheme: "http", description: "Usenet binary downloader", aliases: ["usenet", "nzb"], integration: "api" },
   { type: "nzbget", name: "NZBGet", category: "Downloads", icon: "nzbget", defaultPort: 6789, defaultScheme: "http", description: "Usenet downloader", aliases: ["usenet", "nzb"] },
 
   // Photos, files & documents
-  { type: "immich", name: "Immich", category: "Photos & Files", icon: "immich", defaultPort: 2283, defaultScheme: "http", description: "Photo and video backup platform", aliases: ["photos", "google photos"] },
+  { type: "immich", name: "Immich", category: "Photos & Files", icon: "immich", defaultPort: 2283, defaultScheme: "http", description: "Photo and video backup platform", aliases: ["photos", "google photos"], integration: "api" },
   { type: "nextcloud", name: "Nextcloud", category: "Photos & Files", icon: "nextcloud", defaultScheme: "https", description: "File sync, collaboration, and cloud suite", aliases: ["files", "cloud", "office"] },
   { type: "syncthing", name: "Syncthing", category: "Photos & Files", icon: "syncthing", defaultPort: 8384, defaultScheme: "http", description: "Peer-to-peer file synchronization", aliases: ["sync", "files"] },
   { type: "paperless-ngx", name: "Paperless-ngx", category: "Photos & Files", icon: "paperless-ngx", defaultPort: 8000, defaultScheme: "http", description: "Document management and OCR", aliases: ["documents", "paperless", "ocr"] },
@@ -70,7 +70,7 @@ export const SERVICE_CATALOG: CatalogEntry[] = [
   { type: "docker-host", name: "Docker Host", category: "Infrastructure", icon: "docker-moby", defaultPort: 2375, defaultScheme: "http", description: "Local Docker Engine overview (optional integration)", aliases: ["docker", "containers", "engine"], integration: "docker" },
   { type: "dockge", name: "Dockge", category: "Infrastructure", icon: "dockge", defaultPort: 5001, defaultScheme: "http", description: "Compose stack manager", aliases: ["docker", "compose"], integration: "docker" },
   { type: "portainer", name: "Portainer", category: "Infrastructure", icon: "portainer", defaultPort: 9443, defaultScheme: "https", description: "Container and Docker management", aliases: ["docker", "containers"] },
-  { type: "truenas", name: "TrueNAS", category: "Infrastructure", icon: "truenas", defaultScheme: "https", description: "NAS and storage platform", aliases: ["nas", "storage"] },
+  { type: "truenas", name: "TrueNAS", category: "Infrastructure", icon: "truenas", defaultScheme: "https", description: "NAS and storage platform", aliases: ["nas", "storage"], integration: "api" },
   { type: "unraid", name: "Unraid", category: "Infrastructure", icon: "unraid", defaultScheme: "http", description: "NAS, virtualization, and application host", aliases: ["nas", "storage", "docker"] },
   { type: "proxmox", name: "Proxmox VE", category: "Infrastructure", icon: "proxmox", defaultPort: 8006, defaultScheme: "https", description: "Virtualization management platform", aliases: ["vm", "virtualization", "pve"] },
   { type: "openmediavault", name: "OpenMediaVault", category: "Infrastructure", icon: "openmediavault", defaultPort: 80, defaultScheme: "http", description: "Debian-based NAS platform", aliases: ["omv", "nas", "storage"] },

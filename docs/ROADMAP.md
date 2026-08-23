@@ -27,17 +27,17 @@
 - Self-signed HTTPS support for private/local homelab addresses
 - In-place database migration from Milestone 2
 
-## Milestone 4 — First service-aware integrations ✅ / 🚧
+## Milestone 4 — First service-aware integrations ✅
 
 - Backend-only encrypted secret storage ✅
 - Recognizable service logos ✅
 - Jellyfin sessions and server information ✅
 - Dockge / local Docker stack and container state ✅
-- Sonarr / Radarr queues and upcoming activity
-- Prowlarr health
-- qBittorrent / SABnzbd activity
-- Immich server information
-- TrueNAS health and storage summary
+- Sonarr / Radarr queues, progress, health, and upcoming activity ✅
+- Prowlarr health/indexer summary ✅
+- qBittorrent / SABnzbd activity, progress, speed, and ETA ✅
+- Immich server information/statistics ✅
+- TrueNAS health, capacity, and storage-operation progress ✅
 
 ## Milestone 5 — Universal service catalog ✅
 
@@ -88,14 +88,17 @@
 - Shared design-token layer
 - First extension package validation/persistence/removal flow
 
-## Milestone 10 — Reusable integration framework
+## Milestone 10 — Reusable integration framework ✅ / 🚧
 
-- Shared API credential configuration model
-- Service capability declarations
-- Integration status/error reporting
-- Sonarr/Radarr and download-client adapters
-- Infrastructure and monitoring adapters
-- Authentication capability metadata (native, API, OIDC/SSO, reverse-proxy)
+- Shared API-key and encrypted username/password credential configuration model ✅
+- Service capability declarations ✅
+- Integration status/error reporting ✅
+- Normalized activity/progress model for long-running jobs ✅
+- Sonarr/Radarr and qBittorrent/SABnzbd adapters ✅
+- Prowlarr, Immich, and TrueNAS read-only adapters ✅
+- Authentication capability metadata for built-in integrations ✅
+- Native/OIDC/SSO/reverse-proxy authentication adapter metadata 🚧
+- Installable/community integration adapter runtime 🚧
 
 ## Milestone 11 — Advanced dashboard builder
 

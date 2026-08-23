@@ -12,11 +12,12 @@ import ssl
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from http.cookies import SimpleCookie
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Literal
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -35,7 +36,7 @@ STATUS_WORKERS = max(1, min(int(os.getenv("STATUS_WORKERS", "8")), 32))
 DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "").strip().rstrip("/")
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.9.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.10.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -85,6 +86,9 @@ class ServiceBase(BaseModel):
     sort_order: int = Field(default=0, ge=0, le=1000000)
     api_key: str | None = Field(default=None, max_length=512, exclude=True)
     clear_api_key: bool = Field(default=False, exclude=True)
+    auth_username: str | None = Field(default=None, max_length=256, exclude=True)
+    auth_password: str | None = Field(default=None, max_length=512, exclude=True)
+    clear_auth_credentials: bool = Field(default=False, exclude=True)
 
     @field_validator("name", "category")
     @classmethod
@@ -124,6 +128,7 @@ class ServiceUpdate(ServiceBase):
 class Service(ServiceBase):
     id: int
     has_api_key: bool = False
+    has_auth_credentials: bool = False
     created_at: str
     updated_at: str
 
@@ -320,6 +325,18 @@ class ServiceStatus(BaseModel):
     detail: str | None = None
 
 
+class ServiceActivity(BaseModel):
+    operation: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=300)
+    progress: float | None = Field(default=None, ge=0, le=100)
+    transferred_bytes: int | None = Field(default=None, ge=0)
+    total_bytes: int | None = Field(default=None, ge=0)
+    speed_bps: int | None = Field(default=None, ge=0)
+    eta_seconds: int | None = Field(default=None, ge=0)
+    status: str | None = Field(default=None, max_length=80)
+    detail: str | None = Field(default=None, max_length=200)
+
+
 class ServiceInsight(BaseModel):
     id: int
     kind: str
@@ -327,6 +344,29 @@ class ServiceInsight(BaseModel):
     summary: str | None = None
     secondary: str | None = None
     items: list[str] = Field(default_factory=list)
+    activities: list[ServiceActivity] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class IntegrationDescriptor(BaseModel):
+    type: str
+    name: str
+    auth: Literal["none", "api_key", "username_password", "docker_proxy"]
+    capabilities: list[str] = Field(default_factory=list)
+
+
+INTEGRATIONS: dict[str, IntegrationDescriptor] = {
+    "jellyfin": IntegrationDescriptor(type="jellyfin", name="Jellyfin", auth="api_key", capabilities=["health", "sessions"]),
+    "sonarr": IntegrationDescriptor(type="sonarr", name="Sonarr", auth="api_key", capabilities=["health", "activity", "progress", "queue", "upcoming"]),
+    "radarr": IntegrationDescriptor(type="radarr", name="Radarr", auth="api_key", capabilities=["health", "activity", "progress", "queue", "upcoming"]),
+    "prowlarr": IntegrationDescriptor(type="prowlarr", name="Prowlarr", auth="api_key", capabilities=["health", "indexers"]),
+    "qbittorrent": IntegrationDescriptor(type="qbittorrent", name="qBittorrent", auth="username_password", capabilities=["health", "activity", "progress", "queue", "transfer_speed", "eta"]),
+    "sabnzbd": IntegrationDescriptor(type="sabnzbd", name="SABnzbd", auth="api_key", capabilities=["health", "activity", "progress", "queue", "transfer_speed", "eta"]),
+    "immich": IntegrationDescriptor(type="immich", name="Immich", auth="api_key", capabilities=["health", "server_info", "storage"]),
+    "truenas": IntegrationDescriptor(type="truenas", name="TrueNAS", auth="api_key", capabilities=["health", "storage", "activity", "progress", "alerts"]),
+    "dockge": IntegrationDescriptor(type="dockge", name="Dockge", auth="docker_proxy", capabilities=["health", "containers", "stacks"]),
+    "docker-host": IntegrationDescriptor(type="docker-host", name="Docker Host", auth="docker_proxy", capabilities=["health", "containers", "stacks"]),
+}
 
 
 class SessionUser(BaseModel):
@@ -370,6 +410,10 @@ def ensure_service_migrations(connection: sqlite3.Connection) -> None:
         connection.execute("UPDATE services SET sort_order = id WHERE sort_order = 0")
     if "page_id" not in columns:
         connection.execute("ALTER TABLE services ADD COLUMN page_id INTEGER NOT NULL DEFAULT 1")
+    if "auth_username_encrypted" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN auth_username_encrypted TEXT")
+    if "auth_password_encrypted" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN auth_password_encrypted TEXT")
 
 
 def ensure_default_page(connection: sqlite3.Connection) -> None:
@@ -501,6 +545,8 @@ def init_db() -> None:
                 card_size TEXT NOT NULL DEFAULT 'standard',
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 api_key_encrypted TEXT,
+                auth_username_encrypted TEXT,
+                auth_password_encrypted TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -655,7 +701,11 @@ def row_to_service(row: sqlite3.Row) -> Service:
         sort_order=int(row["sort_order"] or 0),
         api_key=None,
         clear_api_key=False,
+        auth_username=None,
+        auth_password=None,
+        clear_auth_credentials=False,
         has_api_key=bool(row["api_key_encrypted"]),
+        has_auth_credentials=bool(row["auth_username_encrypted"] and row["auth_password_encrypted"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -716,7 +766,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.9.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.10.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -772,36 +822,151 @@ def probe_service(service: Service) -> ServiceStatus:
         return ServiceStatus(id=service.id, state="offline", checked_at=checked_at, detail=detail)
 
 
-def request_json(url: str, headers: dict[str, str] | None = None, verify_tls: bool = True) -> object:
-    request = Request(url, method="GET", headers={"User-Agent": "HomelabDashboard/0.9.0", "Accept": "application/json", **(headers or {})})
+def request_raw(
+    url: str,
+    headers: dict[str, str] | None = None,
+    method: str = "GET",
+    data: bytes | None = None,
+    verify_tls: bool = True,
+) -> tuple[bytes, object]:
+    request = Request(
+        url,
+        method=method,
+        data=data,
+        headers={"User-Agent": "HomelabDashboard/0.10.0", "Accept": "application/json", **(headers or {})},
+    )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return response.read(), response.headers
+
+
+def request_raw_local_retry(
+    url: str,
+    headers: dict[str, str] | None = None,
+    method: str = "GET",
+    data: bytes | None = None,
+) -> tuple[bytes, object]:
+    hostname = urlparse(url).hostname
+    try:
+        return request_raw(url, headers=headers, method=method, data=data)
+    except URLError as exc:
+        reason = exc.reason
+        if is_private_hostname(hostname) and isinstance(reason, (ssl.SSLCertVerificationError, ssl.SSLError)):
+            return request_raw(url, headers=headers, method=method, data=data, verify_tls=False)
+        raise
+
+
+def request_json(url: str, headers: dict[str, str] | None = None, verify_tls: bool = True) -> object:
+    body, _ = request_raw(url, headers=headers, verify_tls=verify_tls)
+    return json.loads(body.decode("utf-8"))
 
 
 def service_json(service: Service, path: str, headers: dict[str, str] | None = None) -> object:
     base = str(service.url).rstrip("/")
     url = f"{base}/{path.lstrip('/')}"
-    hostname = urlparse(url).hostname
+    body, _ = request_raw_local_retry(url, headers=headers)
+    return json.loads(body.decode("utf-8"))
+
+
+def clamp_progress(value: object) -> float | None:
     try:
-        return request_json(url, headers=headers)
-    except URLError as exc:
-        reason = exc.reason
-        if is_private_hostname(hostname) and isinstance(reason, (ssl.SSLCertVerificationError, ssl.SSLError)):
-            return request_json(url, headers=headers, verify_tls=False)
-        raise
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, min(number, 100.0)), 1)
+
+
+def progress_from_remaining(total: object, remaining: object) -> float | None:
+    try:
+        total_number = float(total)  # type: ignore[arg-type]
+        remaining_number = float(remaining)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if total_number <= 0:
+        return None
+    return clamp_progress(((total_number - max(0.0, remaining_number)) / total_number) * 100.0)
+
+
+def safe_int(value: object) -> int | None:
+    try:
+        number = int(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return max(0, number)
+
+
+def parse_duration_seconds(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    text = str(value).strip()
+    if not text or text.lower() in {"unknown", "infinite", "∞", "none"}:
+        return None
+    parts = text.split(":")
+    if not (1 <= len(parts) <= 3):
+        return None
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError:
+        return None
+    if any(number < 0 for number in numbers):
+        return None
+    if len(numbers) == 3:
+        return int(numbers[0] * 3600 + numbers[1] * 60 + numbers[2])
+    if len(numbers) == 2:
+        return int(numbers[0] * 60 + numbers[1])
+    return int(numbers[0])
+
+
+def seconds_until(value: object) -> int | None:
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        target = datetime.fromisoformat(text)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        return max(0, int((target.astimezone(timezone.utc) - utcnow()).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def human_bytes(value: int | None) -> str | None:
+    if value is None:
+        return None
+    size = float(value)
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    unit = units[0]
+    for unit in units:
+        if abs(size) < 1024.0 or unit == units[-1]:
+            break
+        size /= 1024.0
+    precision = 0 if size >= 100 else 1
+    return f"{size:.{precision}f} {unit}"
+
+
+def setup_api_key_insight(service: Service, label: str, capabilities: list[str]) -> ServiceInsight:
+    return ServiceInsight(
+        id=service.id,
+        kind=service.type,
+        state="setup",
+        summary=f"Add {label} API key",
+        secondary="Edit this card to enable live integration details",
+        capabilities=capabilities,
+    )
+
+
+def integration_capabilities(kind: str) -> list[str]:
+    descriptor = INTEGRATIONS.get(kind)
+    return list(descriptor.capabilities) if descriptor else []
 
 
 def jellyfin_insight(service: Service, encrypted_key: str | None) -> ServiceInsight:
+    capabilities = integration_capabilities("jellyfin")
     key = decrypt_secret(encrypted_key)
     if not key:
-        return ServiceInsight(
-            id=service.id,
-            kind="jellyfin",
-            state="setup",
-            summary="Add API key for stream details",
-            secondary="Edit this card to enable Jellyfin integration",
-        )
+        return setup_api_key_insight(service, "Jellyfin", capabilities)
     headers = {"X-Emby-Token": key}
     try:
         info = service_json(service, "/System/Info", headers=headers)
@@ -828,9 +993,7 @@ def jellyfin_insight(service: Service, encrypted_key: str | None) -> ServiceInsi
             user = session.get("UserName") or session.get("Client") or "User"
             items.append(f"{user}: {title}")
         count = len(active)
-        summary = f"{count} active stream{'s' if count != 1 else ''}"
-        if count == 0:
-            summary = "No active streams"
+        summary = f"{count} active stream{'s' if count != 1 else ''}" if count else "No active streams"
         extras = []
         if paused:
             extras.append(f"{paused} paused")
@@ -839,13 +1002,394 @@ def jellyfin_insight(service: Service, encrypted_key: str | None) -> ServiceInsi
         secondary = f"Jellyfin {info.get('Version', 'server')}"
         if extras:
             secondary += " · " + " · ".join(extras)
-        return ServiceInsight(id=service.id, kind="jellyfin", state="ok", summary=summary, secondary=secondary, items=items)
+        return ServiceInsight(id=service.id, kind="jellyfin", state="ok", summary=summary, secondary=secondary, items=items, capabilities=capabilities)
     except Exception as exc:  # noqa: BLE001
         detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
-        return ServiceInsight(id=service.id, kind="jellyfin", state="unavailable", summary="Jellyfin integration unavailable", secondary=detail[:120])
+        return ServiceInsight(id=service.id, kind="jellyfin", state="unavailable", summary="Jellyfin integration unavailable", secondary=detail[:120], capabilities=capabilities)
+
+
+def paged_records(value: object) -> tuple[list[dict], int]:
+    if isinstance(value, list):
+        records = [item for item in value if isinstance(item, dict)]
+        return records, len(records)
+    if isinstance(value, dict):
+        raw = value.get("records") or []
+        records = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        total = safe_int(value.get("totalRecords"))
+        return records, total if total is not None else len(records)
+    return [], 0
+
+
+def servarr_queue_title(kind: str, record: dict) -> str:
+    if kind == "sonarr":
+        series = record.get("series") if isinstance(record.get("series"), dict) else {}
+        episode = record.get("episode") if isinstance(record.get("episode"), dict) else {}
+        series_title = series.get("title")
+        season = safe_int(episode.get("seasonNumber"))
+        number = safe_int(episode.get("episodeNumber"))
+        episode_title = episode.get("title")
+        if series_title and season is not None and number is not None:
+            title = f"{series_title} S{season:02d}E{number:02d}"
+            if episode_title:
+                title += f" — {episode_title}"
+            return title
+    if kind == "radarr":
+        movie = record.get("movie") if isinstance(record.get("movie"), dict) else {}
+        if movie.get("title"):
+            year = movie.get("year")
+            return f"{movie.get('title')} ({year})" if year else str(movie.get("title"))
+    return str(record.get("title") or record.get("downloadId") or "Queued download")
+
+
+def servarr_queue_activity(kind: str, record: dict) -> ServiceActivity:
+    total = safe_int(record.get("size"))
+    remaining = safe_int(record.get("sizeleft") if "sizeleft" in record else record.get("sizeLeft"))
+    transferred = max(0, total - remaining) if total is not None and remaining is not None else None
+    eta = parse_duration_seconds(record.get("timeleft") if "timeleft" in record else record.get("timeLeft"))
+    if eta is None:
+        eta = seconds_until(record.get("estimatedCompletionTime"))
+    status_text = str(record.get("status") or record.get("trackedDownloadStatus") or "Downloading")
+    return ServiceActivity(
+        operation="download",
+        title=servarr_queue_title(kind, record),
+        progress=progress_from_remaining(total, remaining),
+        transferred_bytes=transferred,
+        total_bytes=total,
+        eta_seconds=eta,
+        status=status_text,
+    )
+
+
+def servarr_upcoming(kind: str, calendar: object) -> str | None:
+    if not isinstance(calendar, list):
+        return None
+    candidates: list[tuple[str, str]] = []
+    for raw in calendar:
+        if not isinstance(raw, dict):
+            continue
+        if kind == "sonarr":
+            date = raw.get("airDateUtc") or raw.get("airDate")
+            series = raw.get("series") if isinstance(raw.get("series"), dict) else {}
+            season = safe_int(raw.get("seasonNumber"))
+            number = safe_int(raw.get("episodeNumber"))
+            title = series.get("title") or raw.get("title")
+            if title and season is not None and number is not None:
+                title = f"{title} S{season:02d}E{number:02d}"
+        else:
+            date = raw.get("digitalRelease") or raw.get("physicalRelease") or raw.get("inCinemas") or raw.get("minimumAvailability")
+            title = raw.get("title")
+        if date and title:
+            candidates.append((str(date), str(title)))
+    if not candidates:
+        return None
+    date, title = min(candidates, key=lambda item: item[0])
+    return f"Upcoming: {title} · {date[:10]}"
+
+
+def servarr_insight(service: Service, encrypted_key: str | None, kind: Literal["sonarr", "radarr"]) -> ServiceInsight:
+    capabilities = integration_capabilities(kind)
+    key = decrypt_secret(encrypted_key)
+    if not key:
+        return setup_api_key_insight(service, "Sonarr" if kind == "sonarr" else "Radarr", capabilities)
+    headers = {"X-Api-Key": key}
+    try:
+        system_info = service_json(service, "/api/v3/system/status", headers=headers)
+        health = service_json(service, "/api/v3/health", headers=headers)
+        queue_path = "/api/v3/queue?page=1&pageSize=50&sortDirection=ascending&sortKey=timeleft"
+        if kind == "sonarr":
+            queue_path += "&includeUnknownSeriesItems=true&includeSeries=true&includeEpisode=true"
+        else:
+            queue_path += "&includeUnknownMovieItems=true&includeMovie=true"
+        queue = service_json(service, queue_path, headers=headers)
+        records, queue_total = paged_records(queue)
+        activities = [servarr_queue_activity(kind, record) for record in records[:5]]
+
+        now = utcnow()
+        calendar_params = {"start": now.isoformat(), "end": (now + timedelta(days=7)).isoformat()}
+        if kind == "sonarr":
+            calendar_params["includeSeries"] = "true"
+        params = urlencode(calendar_params)
+        try:
+            calendar = service_json(service, f"/api/v3/calendar?{params}", headers=headers)
+            upcoming = servarr_upcoming(kind, calendar)
+        except Exception:  # noqa: BLE001 - calendar is supplemental; queue/health still provide useful insight.
+            upcoming = None
+
+        health_items = []
+        if isinstance(health, list):
+            for item in health:
+                if isinstance(item, dict) and item.get("message"):
+                    health_items.append(str(item.get("message")))
+        name = "Sonarr" if kind == "sonarr" else "Radarr"
+        version = system_info.get("version") if isinstance(system_info, dict) else None
+        summary = f"{queue_total} item{'s' if queue_total != 1 else ''} in queue" if queue_total else "Queue empty"
+        secondary = f"{name} {version}" if version else name
+        items = health_items[:2]
+        if upcoming and len(items) < 2:
+            items.append(upcoming)
+        if health_items:
+            secondary += f" · {len(health_items)} health warning{'s' if len(health_items) != 1 else ''}"
+        return ServiceInsight(id=service.id, kind=kind, state="ok", summary=summary, secondary=secondary, items=items, activities=activities, capabilities=capabilities)
+    except Exception as exc:  # noqa: BLE001
+        detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+        return ServiceInsight(id=service.id, kind=kind, state="unavailable", summary=f"{kind.title()} integration unavailable", secondary=detail[:120], capabilities=capabilities)
+
+
+def prowlarr_insight(service: Service, encrypted_key: str | None) -> ServiceInsight:
+    capabilities = integration_capabilities("prowlarr")
+    key = decrypt_secret(encrypted_key)
+    if not key:
+        return setup_api_key_insight(service, "Prowlarr", capabilities)
+    headers = {"X-Api-Key": key}
+    try:
+        system_info = service_json(service, "/api/v1/system/status", headers=headers)
+        health = service_json(service, "/api/v1/health", headers=headers)
+        indexers = service_json(service, "/api/v1/indexer", headers=headers)
+        health_items = [str(item.get("message")) for item in health if isinstance(item, dict) and item.get("message")] if isinstance(health, list) else []
+        indexer_list = [item for item in indexers if isinstance(item, dict)] if isinstance(indexers, list) else []
+        enabled = sum(1 for item in indexer_list if item.get("enable", True))
+        version = system_info.get("version") if isinstance(system_info, dict) else None
+        if health_items:
+            summary = f"{len(health_items)} health warning{'s' if len(health_items) != 1 else ''}"
+        else:
+            summary = "Healthy"
+        secondary = f"{enabled}/{len(indexer_list)} indexers enabled" if indexer_list else "Indexer health available"
+        if version:
+            secondary += f" · v{version}"
+        return ServiceInsight(id=service.id, kind="prowlarr", state="ok", summary=summary, secondary=secondary, items=health_items[:2], capabilities=capabilities)
+    except Exception as exc:  # noqa: BLE001
+        detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+        return ServiceInsight(id=service.id, kind="prowlarr", state="unavailable", summary="Prowlarr integration unavailable", secondary=detail[:120], capabilities=capabilities)
+
+
+def qbittorrent_insight(service: Service, encrypted_username: str | None, encrypted_password: str | None) -> ServiceInsight:
+    capabilities = integration_capabilities("qbittorrent")
+    username = decrypt_secret(encrypted_username)
+    password = decrypt_secret(encrypted_password)
+    if not username or not password:
+        return ServiceInsight(
+            id=service.id,
+            kind="qbittorrent",
+            state="setup",
+            summary="Add qBittorrent WebUI credentials",
+            secondary="Edit this card to enable queue and transfer activity",
+            capabilities=capabilities,
+        )
+    base = str(service.url).rstrip("/")
+    try:
+        login_body = urlencode({"username": username, "password": password}).encode("utf-8")
+        login_raw, login_headers = request_raw_local_retry(
+            f"{base}/api/v2/auth/login",
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": f"{base}/"},
+            method="POST",
+            data=login_body,
+        )
+        if login_raw.decode("utf-8", errors="replace").strip() != "Ok.":
+            raise ValueError("qBittorrent rejected the saved WebUI credentials")
+        cookies = SimpleCookie()
+        get_all = getattr(login_headers, "get_all", None)
+        cookie_headers = get_all("Set-Cookie") if callable(get_all) else []
+        for cookie_header in cookie_headers or []:
+            cookies.load(cookie_header)
+        sid = cookies.get("SID")
+        auth_headers = {"Referer": f"{base}/"}
+        if sid:
+            auth_headers["Cookie"] = f"SID={sid.value}"
+
+        torrents_raw, _ = request_raw_local_retry(f"{base}/api/v2/torrents/info", headers=auth_headers)
+        transfer_raw, _ = request_raw_local_retry(f"{base}/api/v2/transfer/info", headers=auth_headers)
+        version_raw, _ = request_raw_local_retry(f"{base}/api/v2/app/version", headers=auth_headers)
+        torrents = json.loads(torrents_raw.decode("utf-8"))
+        transfer = json.loads(transfer_raw.decode("utf-8"))
+        if not isinstance(torrents, list) or not isinstance(transfer, dict):
+            raise ValueError("Unexpected qBittorrent response")
+
+        download_states = {"downloading", "forcedDL", "stalledDL", "queuedDL", "metaDL", "checkingDL", "allocating"}
+        downloading = [item for item in torrents if isinstance(item, dict) and str(item.get("state")) in download_states and float(item.get("progress") or 0) < 1]
+        downloading.sort(key=lambda item: (safe_int(item.get("dlspeed")) or 0, float(item.get("progress") or 0)), reverse=True)
+        activities: list[ServiceActivity] = []
+        for item in downloading[:5]:
+            total = safe_int(item.get("size") or item.get("total_size"))
+            downloaded = safe_int(item.get("downloaded"))
+            progress = clamp_progress(float(item.get("progress") or 0) * 100)
+            eta = safe_int(item.get("eta"))
+            if eta is not None and eta >= 8_640_000:
+                eta = None
+            activities.append(ServiceActivity(
+                operation="download",
+                title=str(item.get("name") or "Torrent download"),
+                progress=progress,
+                transferred_bytes=downloaded,
+                total_bytes=total,
+                speed_bps=safe_int(item.get("dlspeed")),
+                eta_seconds=eta,
+                status=str(item.get("state") or "Downloading"),
+            ))
+        global_speed = safe_int(transfer.get("dl_info_speed")) or 0
+        summary = f"{len(downloading)} download{'s' if len(downloading) != 1 else ''} active" if downloading else "No active downloads"
+        speed_text = human_bytes(global_speed)
+        secondary = f"qBittorrent {version_raw.decode('utf-8', errors='replace').strip()}"
+        if speed_text and global_speed:
+            secondary += f" · ↓ {speed_text}/s"
+        return ServiceInsight(id=service.id, kind="qbittorrent", state="ok", summary=summary, secondary=secondary, activities=activities, capabilities=capabilities)
+    except Exception as exc:  # noqa: BLE001
+        detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+        return ServiceInsight(id=service.id, kind="qbittorrent", state="unavailable", summary="qBittorrent integration unavailable", secondary=detail[:120], capabilities=capabilities)
+
+
+def sabnzbd_insight(service: Service, encrypted_key: str | None) -> ServiceInsight:
+    capabilities = integration_capabilities("sabnzbd")
+    key = decrypt_secret(encrypted_key)
+    if not key:
+        return setup_api_key_insight(service, "SABnzbd", capabilities)
+    try:
+        query = urlencode({"mode": "queue", "output": "json", "apikey": key})
+        payload = service_json(service, f"/api?{query}")
+        queue = payload.get("queue") if isinstance(payload, dict) else None
+        if not isinstance(queue, dict):
+            raise ValueError("Unexpected SABnzbd response")
+        slots = [item for item in (queue.get("slots") or []) if isinstance(item, dict)] if isinstance(queue.get("slots"), list) else []
+        speed_kb = safe_int(queue.get("kbpersec")) or 0
+        speed_bps = speed_kb * 1024
+        activities: list[ServiceActivity] = []
+        for index, item in enumerate(slots[:5]):
+            total_mb = safe_int(item.get("mb"))
+            left_mb = safe_int(item.get("mbleft"))
+            total = total_mb * 1024 * 1024 if total_mb is not None else None
+            remaining = left_mb * 1024 * 1024 if left_mb is not None else None
+            transferred = max(0, total - remaining) if total is not None and remaining is not None else None
+            activities.append(ServiceActivity(
+                operation="download",
+                title=str(item.get("filename") or item.get("name") or "Usenet download"),
+                progress=clamp_progress(item.get("percentage")),
+                transferred_bytes=transferred,
+                total_bytes=total,
+                speed_bps=speed_bps if index == 0 and speed_bps else None,
+                eta_seconds=parse_duration_seconds(item.get("timeleft")),
+                status=str(item.get("status") or "Queued"),
+            ))
+        count = safe_int(queue.get("noofslots"))
+        count = count if count is not None else len(slots)
+        summary = f"{count} item{'s' if count != 1 else ''} in queue" if count else "Queue empty"
+        secondary = str(queue.get("status") or "SABnzbd")
+        speed_text = human_bytes(speed_bps)
+        if speed_text and speed_bps:
+            secondary += f" · ↓ {speed_text}/s"
+        return ServiceInsight(id=service.id, kind="sabnzbd", state="ok", summary=summary, secondary=secondary, activities=activities, capabilities=capabilities)
+    except Exception as exc:  # noqa: BLE001
+        detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+        return ServiceInsight(id=service.id, kind="sabnzbd", state="unavailable", summary="SABnzbd integration unavailable", secondary=detail[:120], capabilities=capabilities)
+
+
+def immich_insight(service: Service, encrypted_key: str | None) -> ServiceInsight:
+    capabilities = integration_capabilities("immich")
+    key = decrypt_secret(encrypted_key)
+    if not key:
+        return setup_api_key_insight(service, "Immich", capabilities)
+    headers = {"x-api-key": key}
+    try:
+        about = service_json(service, "/api/server/about", headers=headers)
+        if not isinstance(about, dict):
+            raise ValueError("Unexpected Immich response")
+        stats: dict = {}
+        stats_error = None
+        try:
+            raw_stats = service_json(service, "/api/server/statistics", headers=headers)
+            if isinstance(raw_stats, dict):
+                stats = raw_stats
+        except Exception as exc:  # noqa: BLE001 - about/version still provides useful data when stats permission is absent.
+            stats_error = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+        photos = safe_int(stats.get("photos")) or 0
+        videos = safe_int(stats.get("videos")) or 0
+        usage = safe_int(stats.get("usage"))
+        asset_count = photos + videos
+        summary = f"{asset_count:,} assets" if stats else "Server connected"
+        version = str(about.get("version") or "server")
+        secondary = f"Immich {version}"
+        if usage is not None:
+            usage_text = human_bytes(usage)
+            if usage_text:
+                secondary += f" · {usage_text} used"
+        items = [f"{photos:,} photos · {videos:,} videos"] if stats else []
+        if stats_error:
+            items.append("Server statistics permission not available")
+        return ServiceInsight(id=service.id, kind="immich", state="ok", summary=summary, secondary=secondary, items=items[:2], capabilities=capabilities)
+    except Exception as exc:  # noqa: BLE001
+        detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+        return ServiceInsight(id=service.id, kind="immich", state="unavailable", summary="Immich integration unavailable", secondary=detail[:120], capabilities=capabilities)
+
+
+def truenas_insight(service: Service, encrypted_key: str | None) -> ServiceInsight:
+    capabilities = integration_capabilities("truenas")
+    key = decrypt_secret(encrypted_key)
+    if not key:
+        return setup_api_key_insight(service, "TrueNAS", capabilities)
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        pools_raw = service_json(service, "/api/v2.0/pool", headers=headers)
+        if not isinstance(pools_raw, list):
+            raise ValueError("Unexpected TrueNAS pool response")
+        pools = [pool for pool in pools_raw if isinstance(pool, dict)]
+        total_size = sum(safe_int(pool.get("size")) or 0 for pool in pools)
+        total_allocated = sum(safe_int(pool.get("allocated")) or 0 for pool in pools)
+        unhealthy = [pool for pool in pools if str(pool.get("status") or "").upper() not in {"ONLINE", "HEALTHY"} or pool.get("healthy") is False]
+        activities: list[ServiceActivity] = []
+        for pool in pools:
+            pool_name = str(pool.get("name") or "Pool")
+            scan = pool.get("scan") if isinstance(pool.get("scan"), dict) else None
+            if scan and str(scan.get("state") or "").upper() not in {"FINISHED", "CANCELED", "CANCELLED", "NONE"}:
+                operation = str(scan.get("function") or "scan").lower()
+                activities.append(ServiceActivity(
+                    operation=operation,
+                    title=f"{pool_name} {operation}",
+                    progress=clamp_progress(scan.get("percentage")),
+                    transferred_bytes=safe_int(scan.get("bytes_processed")),
+                    total_bytes=safe_int(scan.get("bytes_to_process")),
+                    eta_seconds=safe_int(scan.get("total_secs_left")),
+                    status=str(scan.get("state") or "Running"),
+                ))
+            expand = pool.get("expand") if isinstance(pool.get("expand"), dict) else None
+            if expand and str(expand.get("state") or "").upper() not in {"FINISHED", "CANCELED", "CANCELLED", "NONE"}:
+                activities.append(ServiceActivity(
+                    operation="expand",
+                    title=f"{pool_name} expansion",
+                    progress=clamp_progress(expand.get("percentage")),
+                    transferred_bytes=safe_int(expand.get("bytes_reflowed")),
+                    total_bytes=safe_int(expand.get("bytes_to_reflow")),
+                    eta_seconds=safe_int(expand.get("total_secs_left")),
+                    status=str(expand.get("state") or "Running"),
+                ))
+        alert_count = 0
+        try:
+            alerts_raw = service_json(service, "/api/v2.0/alert/list", headers=headers)
+            if isinstance(alerts_raw, list):
+                alert_count = sum(1 for alert in alerts_raw if isinstance(alert, dict) and not alert.get("dismissed"))
+        except Exception:  # noqa: BLE001 - alert permission is supplemental to pool monitoring.
+            alert_count = 0
+
+        summary = "All pools healthy" if not unhealthy else f"{len(unhealthy)} pool{'s' if len(unhealthy) != 1 else ''} need attention"
+        if not pools:
+            summary = "No pools returned"
+        secondary_parts = []
+        if total_size:
+            used_percent = round(total_allocated / total_size * 100)
+            allocated_text = human_bytes(total_allocated)
+            size_text = human_bytes(total_size)
+            secondary_parts.append(f"{allocated_text} / {size_text} used ({used_percent}%)")
+        secondary_parts.append(f"{len(pools)} pool{'s' if len(pools) != 1 else ''}")
+        if alert_count:
+            secondary_parts.append(f"{alert_count} active alert{'s' if alert_count != 1 else ''}")
+        items = [f"{pool.get('name')}: {pool.get('status')}" for pool in unhealthy[:2]]
+        return ServiceInsight(id=service.id, kind="truenas", state="ok", summary=summary, secondary=" · ".join(secondary_parts), items=items, activities=activities[:5], capabilities=capabilities)
+    except Exception as exc:  # noqa: BLE001
+        detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+        if isinstance(exc, HTTPError) and exc.code in {401, 403}:
+            detail = "API key was rejected. TrueNAS REST compatibility may require an appropriately privileged API key."
+        return ServiceInsight(id=service.id, kind="truenas", state="unavailable", summary="TrueNAS integration unavailable", secondary=detail[:160], capabilities=capabilities)
 
 
 def docker_host_insight(service_id: int, kind: str = "docker-host") -> ServiceInsight:
+    capabilities = integration_capabilities(kind)
     if not DOCKER_PROXY_URL:
         return ServiceInsight(
             id=service_id,
@@ -853,6 +1397,7 @@ def docker_host_insight(service_id: int, kind: str = "docker-host") -> ServiceIn
             state="setup",
             summary="Docker host integration not enabled",
             secondary="Enable the optional Docker socket proxy to show local container statistics",
+            capabilities=capabilities,
         )
     try:
         data = request_json(f"{DOCKER_PROXY_URL}/containers/json?all=1")
@@ -882,10 +1427,11 @@ def docker_host_insight(service_id: int, kind: str = "docker-host") -> ServiceIn
             summary=f"{len(projects)} stack{'s' if len(projects) != 1 else ''} · {running}/{total} containers running",
             secondary=secondary,
             items=[f"Stopped: {name}" for name in stopped_names[:2]],
+            capabilities=capabilities,
         )
     except Exception as exc:  # noqa: BLE001
         detail = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
-        return ServiceInsight(id=service_id, kind=kind, state="unavailable", summary="Docker host stats unavailable", secondary=detail[:120])
+        return ServiceInsight(id=service_id, kind=kind, state="unavailable", summary="Docker host stats unavailable", secondary=detail[:120], capabilities=capabilities)
 
 
 def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
@@ -894,14 +1440,31 @@ def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
         return ServiceInsight(id=service.id, kind=service.type, state="none")
     if service.type == "jellyfin":
         return jellyfin_insight(service, row["api_key_encrypted"])
+    if service.type in {"sonarr", "radarr"}:
+        return servarr_insight(service, row["api_key_encrypted"], service.type)
+    if service.type == "prowlarr":
+        return prowlarr_insight(service, row["api_key_encrypted"])
+    if service.type == "qbittorrent":
+        return qbittorrent_insight(service, row["auth_username_encrypted"], row["auth_password_encrypted"])
+    if service.type == "sabnzbd":
+        return sabnzbd_insight(service, row["api_key_encrypted"])
+    if service.type == "immich":
+        return immich_insight(service, row["api_key_encrypted"])
+    if service.type == "truenas":
+        return truenas_insight(service, row["api_key_encrypted"])
     if service.type in {"dockge", "docker-host"}:
         return docker_host_insight(service.id, service.type)
     return ServiceInsight(id=service.id, kind=service.type, state="none")
 
 
+@app.get("/api/integrations", response_model=list[IntegrationDescriptor])
+def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[IntegrationDescriptor]:
+    return list(INTEGRATIONS.values())
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.9.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.10.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -1212,7 +1775,7 @@ def service_insights(_: SessionUser = Depends(require_auth)) -> list[ServiceInsi
         rows = connection.execute(
             "SELECT * FROM services ORDER BY page_id, category COLLATE NOCASE, sort_order, name COLLATE NOCASE"
         ).fetchall()
-    relevant = [row for row in rows if row["type"] in {"jellyfin", "dockge", "docker-host"}]
+    relevant = [row for row in rows if row["type"] in INTEGRATIONS]
     if not relevant:
         return []
     results: dict[int, ServiceInsight] = {}
@@ -1235,8 +1798,8 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
         ensure_category_layout(connection, service.page_id, service.category)
         cursor = connection.execute(
             """
-            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service.name,
@@ -1251,6 +1814,8 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
                 service.card_size,
                 int(connection.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE page_id = ? AND category = ?", (service.page_id, service.category)).fetchone()[0]),
                 encrypt_secret(service.api_key),
+                encrypt_secret(service.auth_username),
+                encrypt_secret(service.auth_password),
                 now,
                 now,
             ),
@@ -1263,7 +1828,7 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
 def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Depends(require_write_auth)) -> Service:
     now = iso_now()
     with db() as connection:
-        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted FROM services WHERE id = ?", (service_id,)).fetchone()
+        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted FROM services WHERE id = ?", (service_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
         require_page(connection, service.page_id)
@@ -1273,6 +1838,16 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
             api_key_encrypted = None
         elif service.api_key:
             api_key_encrypted = encrypt_secret(service.api_key)
+        auth_username_encrypted = current["auth_username_encrypted"]
+        auth_password_encrypted = current["auth_password_encrypted"]
+        if service.clear_auth_credentials:
+            auth_username_encrypted = None
+            auth_password_encrypted = None
+        else:
+            if service.auth_username:
+                auth_username_encrypted = encrypt_secret(service.auth_username)
+            if service.auth_password:
+                auth_password_encrypted = encrypt_secret(service.auth_password)
         sort_order = service.sort_order
         if service.category != current["category"] or service.page_id != current["page_id"]:
             sort_order = int(connection.execute(
@@ -1282,7 +1857,7 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
         connection.execute(
             """
             UPDATE services
-            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, updated_at = ?
+            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -1298,6 +1873,8 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
                 service.card_size,
                 sort_order,
                 api_key_encrypted,
+                auth_username_encrypted,
+                auth_password_encrypted,
                 now,
                 service_id,
             ),

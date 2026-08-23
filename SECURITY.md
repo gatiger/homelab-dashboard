@@ -4,10 +4,15 @@ Do not report vulnerabilities in public issues.
 
 Until a private reporting address is established, use GitHub's private vulnerability reporting feature for the repository.
 
-Sensitive values such as passwords, tokens, and API keys must never be committed. Future releases will encrypt stored integration secrets and keep integration requests on the backend.
+Sensitive values such as passwords, tokens, and API keys must never be committed. Stored integration secrets are encrypted at rest and integration requests originate from the backend rather than exposing saved credentials to the browser.
 
 Live status checks are backend-originated requests to service URLs configured by an authenticated dashboard administrator. Public HTTPS targets require valid certificates. Private/local targets may use self-signed certificates for homelab compatibility.
 
 ## Theme packages
 
 Imported themes are treated as untrusted data. The supported theme package format accepts only validated metadata and six-digit hexadecimal design tokens. Theme packages cannot contain executable JavaScript, arbitrary CSS, remote resource URLs, Docker permissions, filesystem access, or access to stored service credentials.
+
+
+## Integration secrets
+
+Stored service API keys and qBittorrent WebUI credentials are encrypted using the local key in `/app/data/secret.key`. They are not returned through service configuration responses after storage. Back up the SQLite database and `secret.key` together.

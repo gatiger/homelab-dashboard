@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.9.0
+ghcr.io/gatiger/homelab-dashboard:0.10.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -50,7 +50,7 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --build
 
 ## Docker access is optional
 
-Homelab Dashboard does **not** require the Docker socket. Service launching, catalog cards, URL monitoring, Jellyfin API integration, and normal dashboard functions work without Docker host access.
+Homelab Dashboard does **not** require the Docker socket. Service launching, catalog cards, URL monitoring, service API integrations, and normal dashboard functions work without Docker host access.
 
 To enable read-only local Docker statistics, add the restricted socket-proxy overlay:
 
@@ -71,10 +71,16 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Multiple dashboard pages/tabs with persistent page assignment and ordering
 - Persisted category ordering and collapsible category sections
 - Optional Jellyfin server/session integration
+- Sonarr/Radarr queue, health, progress, and upcoming activity
+- Prowlarr indexer/health insight
+- qBittorrent and SABnzbd live queue/download progress with speed and ETA when available
+- Immich server/storage statistics
+- TrueNAS pool health/storage plus scrub, resilver, and expansion progress through the REST compatibility API
 - Optional read-only local Docker host overview
 - System, light/dark, and multiple color themes with persistent appearance settings
 - Safe importable JSON theme extensions with no executable code
 - Open-ended service identifiers for future templates/plugins
+- Shared integration capability/activity model for progress-aware service cards
 
 
 ## Themes and extensions
@@ -87,7 +93,7 @@ Community themes can be imported as validated JSON packages. Theme extensions co
 
 The built-in catalog covers media, download clients, files/photos, home automation, monitoring, networking/security, infrastructure, development, productivity, gaming, and generic custom services. Examples include Jellyfin, Plex, Emby, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd, Immich, Nextcloud, Home Assistant, Grafana, Uptime Kuma, Pi-hole, Authentik, Dockge, Portainer, TrueNAS, Unraid, Proxmox VE, Gitea, Vaultwarden, and Pterodactyl.
 
-Catalog port values are hints only; users can enter any URL, reverse proxy, port, or path.
+Catalog port values are hints only; users can enter any URL, reverse proxy, port, or path. Rich integrations are opt-in by adding the credential requested by that service. See [Service integrations](docs/configuration/service-integrations.md).
 
 ## Persistent data
 
@@ -146,7 +152,7 @@ Open `http://localhost:5173`.
 - Passwords use scrypt and are never stored as plain text.
 - Login sessions use HttpOnly cookies and hashed server-side tokens.
 - State-changing requests require a CSRF token.
-- Jellyfin API keys are encrypted at rest and are never returned after storage.
+- Saved API keys and qBittorrent WebUI credentials are encrypted at rest and are never returned after storage.
 - Docker access is absent by default. The optional integration uses a restricted internal socket proxy with POST operations disabled.
 - Imported themes are validated data-only manifests; they cannot contain executable CSS or JavaScript.
 
@@ -154,7 +160,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Project status / roadmap
 
-v0.9 adds persistent appearance themes and the first validated extension package format. Future work includes richer service integrations, widgets, broader import/export, SSO options, and a permission-aware plugin model.
+v0.10 completes the original Milestone 4 service-aware integrations and introduces a reusable capability/activity model with progress-aware cards. Future work includes widgets, broader import/export, SSO options, and a permission-aware plugin model.
 
 See [CHANGELOG.md](CHANGELOG.md), [ROADMAP](docs/ROADMAP.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 

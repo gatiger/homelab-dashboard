@@ -24,15 +24,21 @@
 
 ## Service model
 
-Each configured service currently has an ID, display name, open-ended service type identifier, URL, dashboard page assignment, category, optional custom icon, enabled state, monitoring state, favorite/pinned state, card size, persistent sort order, optional encrypted API credential, and timestamps.
+Each configured service currently has an ID, display name, open-ended service type identifier, URL, dashboard page assignment, category, optional custom icon, enabled state, monitoring state, favorite/pinned state, card size, persistent sort order, optional encrypted API key and/or encrypted username/password credentials, and timestamps.
 
 The catalog is intentionally separate from configured services. A catalog entry is a template; selecting it creates a normal service record that the user can rename, re-categorize, or point at any URL/port.
 
 ## Extension path
 
-v0.9 establishes the first versioned extension-shaped package: non-executable theme manifests. The same package-management principles will later expand to catalog packs, widgets, integration adapters, and authentication adapters with explicit capability declarations.
+v0.9 established the first versioned extension-shaped package: non-executable theme manifests. v0.10 adds explicit backend integration descriptors and a shared activity/progress data model. The same package-management principles will later expand to catalog packs, widgets, installable integration adapters, and authentication adapters with explicit capability declarations.
 
 The catalog metadata will become the basis for future versioned integration manifests. Rich integrations can declare capabilities (status, metrics, activity, controls, authentication methods) without requiring every catalog entry to ship custom backend code. See `docs/extensions/architecture.md`.
+
+## Integration/activity model
+
+Rich backend adapters normalize service-specific APIs into `ServiceInsight` records. Each insight can declare capabilities and zero or more `ServiceActivity` records. Activities use a common shape for operation, title, progress percentage, transferred/total bytes, transfer speed, ETA, status, and detail text. The frontend therefore renders one progress component for downloads, storage scans, updates, and future job types rather than embedding service-specific progress UI.
+
+Credentials remain backend-only. API-key integrations use the existing encrypted key field; username/password integrations such as qBittorrent use separate encrypted credential fields. Empty credential fields during edit preserve existing secrets unless the user explicitly chooses to remove them.
 
 ## Layout model
 

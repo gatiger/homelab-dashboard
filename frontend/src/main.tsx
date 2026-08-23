@@ -48,6 +48,7 @@ type Service = {
   created_at: string;
   updated_at: string;
   has_api_key: boolean;
+  has_auth_credentials: boolean;
 };
 
 type ServiceForm = {
@@ -64,6 +65,9 @@ type ServiceForm = {
   sort_order: number;
   api_key: string;
   clear_api_key: boolean;
+  auth_username: string;
+  auth_password: string;
+  clear_auth_credentials: boolean;
 };
 
 type DashboardPage = {
@@ -87,6 +91,18 @@ type AppearanceSettings = {
   custom_themes: ThemePackage[];
 };
 
+type ServiceActivity = {
+  operation: string;
+  title: string;
+  progress?: number | null;
+  transferred_bytes?: number | null;
+  total_bytes?: number | null;
+  speed_bps?: number | null;
+  eta_seconds?: number | null;
+  status?: string | null;
+  detail?: string | null;
+};
+
 type ServiceInsight = {
   id: number;
   kind: string;
@@ -94,6 +110,8 @@ type ServiceInsight = {
   summary?: string | null;
   secondary?: string | null;
   items: string[];
+  activities: ServiceActivity[];
+  capabilities: string[];
 };
 
 type ServiceStatus = {
@@ -105,7 +123,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.9.0";
+const APP_VERSION = "0.10.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -121,6 +139,19 @@ const EMPTY_SERVICE: ServiceForm = {
   sort_order: 0,
   api_key: "",
   clear_api_key: false,
+  auth_username: "",
+  auth_password: "",
+  clear_auth_credentials: false,
+};
+
+const API_KEY_INTEGRATIONS: Record<string, { label: string; hint: string }> = {
+  jellyfin: { label: "Jellyfin API key", hint: "enables stream details" },
+  sonarr: { label: "Sonarr API key", hint: "enables queue, progress, health, and upcoming activity" },
+  radarr: { label: "Radarr API key", hint: "enables queue, progress, health, and upcoming activity" },
+  prowlarr: { label: "Prowlarr API key", hint: "enables indexer and health details" },
+  sabnzbd: { label: "SABnzbd API key", hint: "enables queue, speed, ETA, and progress" },
+  immich: { label: "Immich API key", hint: "enables server and storage statistics" },
+  truenas: { label: "TrueNAS API key", hint: "enables pool health, storage, and scrub/resilver progress" },
 };
 
 const TYPE_LABELS = Object.fromEntries(SERVICE_CATALOG.map((entry) => [entry.type, entry.name])) as Record<string, string>;
@@ -155,6 +186,61 @@ function greetingForHour(hour: number): string {
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";
   return "Good evening";
+}
+
+function formatBytes(value?: number | null): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let size = Math.max(0, value);
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  const digits = size >= 100 ? 0 : 1;
+  return `${size.toFixed(digits)} ${units[unit]}`;
+}
+
+function formatEta(value?: number | null): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  const seconds = Math.max(0, Math.round(value));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  if (hours < 24) return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const hourRemainder = hours % 24;
+  return hourRemainder ? `${days}d ${hourRemainder}h` : `${days}d`;
+}
+
+function ActivityProgress({ activity, additional }: { activity: ServiceActivity; additional: number }) {
+  const progress = activity.progress == null ? null : Math.max(0, Math.min(100, activity.progress));
+  const transferred = formatBytes(activity.transferred_bytes);
+  const total = formatBytes(activity.total_bytes);
+  const speed = formatBytes(activity.speed_bps);
+  const eta = formatEta(activity.eta_seconds);
+  const operation = activity.operation.replace(/[-_]/g, " ");
+  const details = [
+    transferred && total ? `${transferred} / ${total}` : total ? total : null,
+    speed ? `↓ ${speed}/s` : null,
+    eta ? `${eta} left` : null,
+  ].filter(Boolean) as string[];
+  return (
+    <div className="activity-block">
+      <div className="activity-heading">
+        <span className="activity-operation">{operation}</span>
+        <strong title={activity.title}>{activity.title}</strong>
+        {progress != null && <span className="activity-percent">{Math.round(progress)}%</span>}
+      </div>
+      <div className={`activity-track ${progress == null ? "indeterminate" : ""}`} aria-label={progress == null ? `${activity.title} in progress` : `${activity.title} ${Math.round(progress)} percent`}>
+        <span className="activity-bar" style={progress == null ? undefined : { width: `${progress}%` }} />
+      </div>
+      <div className="activity-meta">
+        {activity.status && <span>{activity.status}</span>}
+        {details.map((detail) => <span key={detail}>{detail}</span>)}
+        {additional > 0 && <span>+{additional} more</span>}
+      </div>
+    </div>
+  );
 }
 
 function AuthScreen({ status, onAuthenticated }: { status: AuthStatus; onAuthenticated: (auth: AuthStatus) => void }) {
@@ -289,7 +375,9 @@ function ServiceCatalogModal({ onClose, onSelect }: { onClose: () => void; onSel
                 <div className="catalog-meta">
                   <small>{entry.category}</small>
                   {entry.defaultPort && <small>Default :{entry.defaultPort}</small>}
-                  {entry.integration === "jellyfin" && <small className="integration-tag">API integration</small>}
+                  {entry.integration === "jellyfin" && <small className="integration-tag">Live API integration</small>}
+                  {entry.integration === "api" && <small className="integration-tag">Live API integration</small>}
+                  {entry.integration === "credentials" && <small className="integration-tag">Live credential integration</small>}
                   {entry.integration === "docker" && <small className="integration-tag">Docker insight</small>}
                 </div>
               </div>
@@ -337,6 +425,9 @@ function ServiceModal({
     sort_order: service.sort_order,
     api_key: "",
     clear_api_key: false,
+    auth_username: "",
+    auth_password: "",
+    clear_auth_credentials: false,
   } : initialTemplate ? {
     name: ["link", "other"].includes(initialTemplate.type) ? "" : initialTemplate.name,
     type: initialTemplate.type,
@@ -351,6 +442,9 @@ function ServiceModal({
     sort_order: 0,
     api_key: "",
     clear_api_key: false,
+    auth_username: "",
+    auth_password: "",
+    clear_auth_credentials: false,
   } : { ...EMPTY_SERVICE, page_id: defaultPageId });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -376,7 +470,13 @@ function ServiceModal({
     setBusy(true);
     setError("");
     try {
-      const payload = { ...form, icon: form.icon.trim() || null, api_key: form.api_key.trim() || null };
+      const payload = {
+        ...form,
+        icon: form.icon.trim() || null,
+        api_key: form.api_key.trim() || null,
+        auth_username: form.auth_username.trim() || null,
+        auth_password: form.auth_password || null,
+      };
       await api<Service>(service ? `/api/services/${service.id}` : "/api/services", {
         method: service ? "PUT" : "POST",
         body: JSON.stringify(payload),
@@ -451,23 +551,53 @@ function ServiceModal({
               <input value={form.icon} onChange={(event) => setField("icon", event.target.value)} placeholder="🔗" />
             </label>
           )}
-          {form.type === "jellyfin" && (
+          {API_KEY_INTEGRATIONS[form.type] && (
             <>
               <label className="span-2">
-                <span>Jellyfin API key <small>optional, enables stream details</small></span>
+                <span>{API_KEY_INTEGRATIONS[form.type].label} <small>optional, {API_KEY_INTEGRATIONS[form.type].hint}</small></span>
                 <input
                   type="password"
                   value={form.api_key}
                   onChange={(event) => setField("api_key", event.target.value)}
-                  placeholder={service?.has_api_key ? "API key saved — leave blank to keep it" : "Paste Jellyfin API key"}
+                  placeholder={service?.has_api_key ? "API key saved — leave blank to keep it" : `Paste ${API_KEY_INTEGRATIONS[form.type].label}`}
                   autoComplete="off"
                 />
-                <small>The key is encrypted before it is stored by the dashboard.</small>
+                <small>The key is encrypted before it is stored and is only sent server-side to this configured service.</small>
               </label>
               {service?.has_api_key && (
                 <label className="check-row span-2">
                   <input type="checkbox" checked={form.clear_api_key} onChange={(event) => setField("clear_api_key", event.target.checked)} />
-                  <span>Remove the saved Jellyfin API key</span>
+                  <span>Remove the saved API key</span>
+                </label>
+              )}
+            </>
+          )}
+          {form.type === "qbittorrent" && (
+            <>
+              <label>
+                <span>qBittorrent WebUI username</span>
+                <input
+                  value={form.auth_username}
+                  onChange={(event) => setField("auth_username", event.target.value)}
+                  placeholder={service?.has_auth_credentials ? "Credentials saved — leave blank to keep" : "WebUI username"}
+                  autoComplete="off"
+                />
+              </label>
+              <label>
+                <span>qBittorrent WebUI password</span>
+                <input
+                  type="password"
+                  value={form.auth_password}
+                  onChange={(event) => setField("auth_password", event.target.value)}
+                  placeholder={service?.has_auth_credentials ? "Credentials saved — leave blank to keep" : "WebUI password"}
+                  autoComplete="off"
+                />
+              </label>
+              <small className="span-2 credential-note">Credentials are encrypted at rest and used only by the backend to read qBittorrent queue and transfer status.</small>
+              {service?.has_auth_credentials && (
+                <label className="check-row span-2">
+                  <input type="checkbox" checked={form.clear_auth_credentials} onChange={(event) => setField("clear_auth_credentials", event.target.checked)} />
+                  <span>Remove the saved qBittorrent credentials</span>
                 </label>
               )}
             </>
@@ -1224,6 +1354,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                           <div className={`insight insight-${insight.state}`}>
                             {insight.summary && <strong>{insight.summary}</strong>}
                             {insight.secondary && <span>{insight.secondary}</span>}
+                            {insight.activities?.[0] && <ActivityProgress activity={insight.activities[0]} additional={Math.max(0, insight.activities.length - 1)} />}
                             {insight.items.slice(0, 2).map((item) => <span className="insight-item" key={item}>{item}</span>)}
                           </div>
                         )}

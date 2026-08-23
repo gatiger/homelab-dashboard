@@ -4,6 +4,26 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.10.0] - 2026-08-22
+
+### Added
+- Reusable integration descriptors with declared authentication and capability metadata.
+- Shared activity/progress records for downloads, queues, storage scans, and future long-running jobs.
+- Sonarr and Radarr queue/progress, health, and upcoming activity integrations.
+- Prowlarr health/indexer integration.
+- qBittorrent WebUI integration with encrypted username/password storage, download progress, speed, and ETA.
+- SABnzbd queue integration with progress, speed, and ETA.
+- Immich server/statistics integration.
+- TrueNAS pool health/capacity plus scrub, resilver, and expansion progress through the REST compatibility API.
+- Progress-bar UI for rich service cards.
+
+### Changed
+- API-key configuration is now shared across supported integrations rather than being Jellyfin-specific.
+- Service insight responses now include capabilities and normalized activities.
+
+### Security
+- New service integrations are read-only. Saved API keys and qBittorrent credentials remain encrypted at rest and backend-only.
+
 ## [0.9.0] - 2026-08-22
 
 ### Added
