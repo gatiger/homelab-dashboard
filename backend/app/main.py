@@ -44,7 +44,7 @@ UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 36
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.14.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.15.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -61,6 +61,8 @@ class AuthStatus(BaseModel):
     authenticated: bool
     username: str | None = None
     csrf_token: str | None = None
+    # Returned only when a new one-time recovery code has just been created.
+    recovery_code: str | None = None
 
 
 class Credentials(BaseModel):
@@ -74,6 +76,46 @@ class Credentials(BaseModel):
         if not value:
             raise ValueError("Username is required")
         return value
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
+
+
+class RecoveryCodeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordRecoveryRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    recovery_code: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=10, max_length=256)
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return value.strip()
+
+
+class RecoveryCodeResult(BaseModel):
+    recovery_code: str
+    generated_at: str
+
+
+class AccountAuditEvent(BaseModel):
+    id: int
+    event: str
+    detail: str | None = None
+    created_at: str
+
+
+class AccountSummary(BaseModel):
+    username: str
+    recovery_configured: bool
+    recovery_generated_at: str | None = None
+    password_changed_at: str | None = None
+    recent_events: list[AccountAuditEvent] = Field(default_factory=list)
 
 
 # Service type identifiers are intentionally open-ended. The frontend ships a
@@ -708,8 +750,10 @@ INTEGRATIONS: dict[str, IntegrationDescriptor] = {
 
 
 class SessionUser(BaseModel):
+    user_id: int
     username: str
     csrf_token: str
+    token_hash: str
 
 
 def utcnow() -> datetime:
@@ -864,6 +908,16 @@ def require_page(connection: sqlite3.Connection, page_id: int) -> sqlite3.Row:
     return row
 
 
+def ensure_account_migrations(connection: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(admin_users)").fetchall()}
+    if "recovery_code_hash" not in columns:
+        connection.execute("ALTER TABLE admin_users ADD COLUMN recovery_code_hash TEXT")
+    if "recovery_generated_at" not in columns:
+        connection.execute("ALTER TABLE admin_users ADD COLUMN recovery_generated_at TEXT")
+    if "password_changed_at" not in columns:
+        connection.execute("ALTER TABLE admin_users ADD COLUMN password_changed_at TEXT")
+
+
 def init_db() -> None:
     with db() as connection:
         connection.executescript(
@@ -874,6 +928,18 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
+                recovery_code_hash TEXT,
+                recovery_generated_at TEXT,
+                password_changed_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS account_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT NOT NULL,
+                event TEXT NOT NULL,
+                detail TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -999,6 +1065,7 @@ def init_db() -> None:
             );
             """
         )
+        ensure_account_migrations(connection)
         ensure_service_migrations(connection)
         category_columns = {row["name"] for row in connection.execute("PRAGMA table_info(category_layouts)").fetchall()}
         if "icon" not in category_columns:
@@ -1099,6 +1166,40 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
+RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def normalize_recovery_code(value: str) -> str:
+    return "".join(character for character in value.upper() if character.isalnum())
+
+
+def generate_recovery_code() -> str:
+    raw = "".join(secrets.choice(RECOVERY_ALPHABET) for _ in range(32))
+    return "HD-" + "-".join(raw[index:index + 4] for index in range(0, len(raw), 4))
+
+
+def recovery_code_digest(code: str) -> str:
+    normalized = normalize_recovery_code(code)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def rotate_recovery_code(connection: sqlite3.Connection, user_id: int) -> RecoveryCodeResult:
+    code = generate_recovery_code()
+    generated_at = iso_now()
+    connection.execute(
+        "UPDATE admin_users SET recovery_code_hash = ?, recovery_generated_at = ? WHERE id = ?",
+        (recovery_code_digest(code), generated_at, user_id),
+    )
+    return RecoveryCodeResult(recovery_code=code, generated_at=generated_at)
+
+
+def audit_account_event(connection: sqlite3.Connection, user_id: int | None, username: str, event: str, detail: str | None = None) -> None:
+    connection.execute(
+        "INSERT INTO account_audit (user_id, username, event, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+        (user_id, username, event, detail, iso_now()),
+    )
+
+
 def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -1138,7 +1239,7 @@ def get_session(session_token: str | None) -> SessionUser | None:
     with db() as connection:
         row = connection.execute(
             """
-            SELECT u.username, s.csrf_token, s.expires_at
+            SELECT u.id AS user_id, u.username, s.token_hash, s.csrf_token, s.expires_at
             FROM sessions s
             JOIN admin_users u ON u.id = s.user_id
             WHERE s.token_hash = ?
@@ -1150,7 +1251,7 @@ def get_session(session_token: str | None) -> SessionUser | None:
         if datetime.fromisoformat(row["expires_at"]) <= utcnow():
             connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_digest(session_token),))
             return None
-        return SessionUser(username=row["username"], csrf_token=row["csrf_token"])
+        return SessionUser(user_id=int(row["user_id"]), username=row["username"], csrf_token=row["csrf_token"], token_hash=row["token_hash"])
 
 
 def require_auth(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> SessionUser:
@@ -1257,7 +1358,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.14.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.15.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -1324,7 +1425,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.14.0", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": "HomelabDashboard/0.15.0", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -2591,7 +2692,7 @@ def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[Inte
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.14.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.15.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -2611,13 +2712,18 @@ def setup_admin(credentials: Credentials, response: Response) -> AuthStatus:
     with db() as connection:
         if connection.execute("SELECT 1 FROM admin_users LIMIT 1").fetchone():
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Administrator is already configured")
+        now = iso_now()
         cursor = connection.execute(
-            "INSERT INTO admin_users (id, username, password_hash, created_at) VALUES (1, ?, ?, ?)",
-            (credentials.username, hash_password(credentials.password), iso_now()),
+            "INSERT INTO admin_users (id, username, password_hash, password_changed_at, created_at) VALUES (1, ?, ?, ?, ?)",
+            (credentials.username, hash_password(credentials.password), now, now),
         )
-        token, csrf = create_session(connection, cursor.lastrowid or 1)
+        user_id = cursor.lastrowid or 1
+        recovery = rotate_recovery_code(connection, user_id)
+        audit_account_event(connection, user_id, credentials.username, "account_created", "Administrator account created")
+        audit_account_event(connection, user_id, credentials.username, "recovery_code_generated", "Initial recovery code generated")
+        token, csrf = create_session(connection, user_id)
     set_session_cookie(response, token)
-    return AuthStatus(setup_required=False, authenticated=True, username=credentials.username, csrf_token=csrf)
+    return AuthStatus(setup_required=False, authenticated=True, username=credentials.username, csrf_token=csrf, recovery_code=recovery.recovery_code)
 
 
 @app.post("/api/auth/login", response_model=AuthStatus)
@@ -2645,6 +2751,82 @@ def logout(
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
+
+
+@app.post("/api/auth/recover", response_model=AuthStatus)
+def recover_password(payload: PasswordRecoveryRequest, response: Response) -> AuthStatus:
+    # Recovery codes are deliberately high entropy and stored only as a digest.
+    # Use one generic failure response so the endpoint does not confirm usernames.
+    with db() as connection:
+        user = connection.execute(
+            "SELECT id, username, recovery_code_hash FROM admin_users WHERE username = ? COLLATE NOCASE",
+            (payload.username,),
+        ).fetchone()
+        supplied_digest = recovery_code_digest(payload.recovery_code)
+        valid = bool(user and user["recovery_code_hash"] and hmac.compare_digest(supplied_digest, user["recovery_code_hash"]))
+        if not valid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or recovery code")
+        now = iso_now()
+        connection.execute(
+            "UPDATE admin_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+            (hash_password(payload.new_password), now, user["id"]),
+        )
+        connection.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+        recovery = rotate_recovery_code(connection, int(user["id"]))
+        audit_account_event(connection, int(user["id"]), user["username"], "password_recovered", "Password reset using recovery code")
+        audit_account_event(connection, int(user["id"]), user["username"], "recovery_code_rotated", "Recovery code rotated after use")
+        token, csrf = create_session(connection, int(user["id"]))
+    set_session_cookie(response, token)
+    return AuthStatus(setup_required=False, authenticated=True, username=user["username"], csrf_token=csrf, recovery_code=recovery.recovery_code)
+
+
+@app.get("/api/account", response_model=AccountSummary)
+def get_account(user: SessionUser = Depends(require_auth)) -> AccountSummary:
+    with db() as connection:
+        row = connection.execute(
+            "SELECT username, recovery_code_hash, recovery_generated_at, password_changed_at FROM admin_users WHERE id = ?",
+            (user.user_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+        events = connection.execute(
+            "SELECT id, event, detail, created_at FROM account_audit WHERE user_id = ? ORDER BY id DESC LIMIT 12",
+            (user.user_id,),
+        ).fetchall()
+    return AccountSummary(
+        username=row["username"],
+        recovery_configured=bool(row["recovery_code_hash"]),
+        recovery_generated_at=row["recovery_generated_at"],
+        password_changed_at=row["password_changed_at"],
+        recent_events=[AccountAuditEvent(id=int(event["id"]), event=event["event"], detail=event["detail"], created_at=event["created_at"]) for event in events],
+    )
+
+
+@app.post("/api/account/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(payload: PasswordChangeRequest, user: SessionUser = Depends(require_write_auth)) -> Response:
+    with db() as connection:
+        row = connection.execute("SELECT password_hash FROM admin_users WHERE id = ?", (user.user_id,)).fetchone()
+        if not row or not verify_password(payload.current_password, row["password_hash"]):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+        connection.execute(
+            "UPDATE admin_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+            (hash_password(payload.new_password), iso_now(), user.user_id),
+        )
+        # Keep the browser that performed the change signed in, but invalidate all other sessions.
+        connection.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (user.user_id, user.token_hash))
+        audit_account_event(connection, user.user_id, user.username, "password_changed", "Password changed from Settings; other sessions invalidated")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/account/recovery-code", response_model=RecoveryCodeResult)
+def regenerate_recovery_code(payload: RecoveryCodeRequest, user: SessionUser = Depends(require_write_auth)) -> RecoveryCodeResult:
+    with db() as connection:
+        row = connection.execute("SELECT password_hash FROM admin_users WHERE id = ?", (user.user_id,)).fetchone()
+        if not row or not verify_password(payload.current_password, row["password_hash"]):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+        result = rotate_recovery_code(connection, user.user_id)
+        audit_account_event(connection, user.user_id, user.username, "recovery_code_generated", "Recovery code generated from Settings; previous code invalidated")
+    return result
 
 
 @app.get("/api/appearance", response_model=AppearanceSettings)
@@ -2821,9 +3003,9 @@ def delete_widget(widget_id: int, _: SessionUser = Depends(require_write_auth)) 
 @app.get("/api/extensions", response_model=list[ExtensionDescriptor])
 def list_extensions(_: SessionUser = Depends(require_auth)) -> list[ExtensionDescriptor]:
     built_in = [
-        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.14.0", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.14.0", author="Homelab Dashboard", description="Clock, note, bookmarks, dashboard-summary, service-status, and update-overview widgets.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.14.0", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.15.0", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.15.0", author="Homelab Dashboard", description="Clock, note, bookmarks, dashboard-summary, service-status, and update-overview widgets.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.15.0", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
     ]
     with db() as connection:
         selected = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()

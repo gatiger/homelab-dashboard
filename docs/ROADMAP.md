@@ -153,7 +153,19 @@ Additional management providers are tracked separately below rather than making 
 - Additional built-in widget types ✅
 - Compact responsive command bar / header cleanup ✅
 
-## Milestone 15 — Open extension platform 🚧
+## Milestone 15 — Account and recovery ✅
+
+- Settings → Account security section
+- Authenticated password changes requiring the current password
+- Invalidate other active sessions after password changes
+- High-entropy one-time recovery-code generation/regeneration
+- Forgot-password flow without requiring email/SMTP
+- Automatic recovery-code rotation after successful use
+- Account-security audit history without secret logging
+- Host-side emergency administrator reset command
+- In-place migration for existing single-administrator installations
+
+## Milestone 16 — Open extension platform 🚧
 
 - Versioned extension manifest
 - Permission/capability model

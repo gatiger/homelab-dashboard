@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.14.0
+ghcr.io/gatiger/homelab-dashboard:0.15.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -62,7 +62,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 
 ## Current features
 
-- First-run administrator setup and password-protected dashboard
+- First-run administrator setup, password-protected dashboard, password changes, and recovery codes
 - SQLite persistence and encrypted saved integration secrets
 - Searchable service catalog with common self-hosted applications
 - Recognizable bundled service logos with generic/custom fallbacks
@@ -85,7 +85,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Reusable management Connections so platform credentials do not require visible controller cards
 - Standardized managed-card update indicators with glowing current/available/error states
 - Automatic in-browser telemetry/update-state refresh without manually reloading the page
-- Central Settings hub for General, Appearance, Connections, Monitoring, Extensions, and About
+- Central Settings hub for General, Account, Dashboard, Appearance, Connections, Monitoring, Extensions, and About
 - Configurable browser telemetry/update refresh intervals and scheduled update-discovery interval
 - Built-in Clock/Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets
 - Widgets can be assigned to any page/category and use Compact/Standard/Wide card sizes
@@ -109,9 +109,11 @@ The update agent is not required for normal dashboard use. See [Update Manager](
 
 ## Settings, themes, widgets, and extensions
 
-Open **Settings** for General, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
+Open **Settings** for General, Account, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. The Account section supports password changes, one-time recovery-code generation, and recent security activity; the login screen can use a saved recovery code when the password is forgotten. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
 
 The built-in widget pack includes Clock & Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets. Widgets are stored in SQLite and can be assigned to any dashboard page/category with Compact, Standard, or Wide sizing. See [Widgets](docs/configuration/widgets.md) and [Settings](docs/configuration/settings.md). See [Advanced dashboard builder](docs/configuration/dashboard-builder.md) for mixed ordering, category customization, page cloning, layout import/export, and the compact command bar.
+
+For a complete lockout where both the password and recovery code are unavailable, someone with legitimate shell access to the dashboard host can run `docker exec -it <dashboard-container> python -m app.admin reset-password`. This emergency path resets the local administrator password, invalidates all existing sessions, and rotates the recovery code. See [Account recovery](docs/configuration/account-recovery.md).
 
 Community themes can be imported as validated JSON packages. Theme extensions contain approved color tokens only and cannot execute CSS/JavaScript or access network services, Docker, files, or stored credentials. The Extension Manager shows installed built-in modules and imported theme packages; arbitrary executable community plugins remain a later milestone. See [Theme extensions](docs/extensions/themes.md) and the broader [extension architecture](docs/extensions/architecture.md).
 

@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Cable,
+  Copy,
   Download,
   ArrowUpCircle,
   History,
@@ -12,6 +13,7 @@ import {
   LayoutGrid,
   Link as LinkIcon,
   LogOut,
+  KeyRound,
   Palette,
   Pencil,
   Plus,
@@ -28,13 +30,14 @@ import "./styles.css";
 import { CATALOG_BY_TYPE, CATALOG_CATEGORIES, SERVICE_CATALOG, catalogSearchText, urlPlaceholder, type CatalogEntry } from "./serviceCatalog";
 import { BUILTIN_THEMES, BUILTIN_THEME_BY_ID, THEME_TEMPLATE, applyTheme, resolveTheme, type ThemePackage } from "./themes";
 import { WidgetCard, WidgetModal, type DashboardWidget } from "./widgets";
-import { SettingsModal, type DashboardSettings, type ExtensionDescriptor } from "./settings";
+import { SettingsModal, type AccountSummary, type DashboardSettings, type ExtensionDescriptor, type RecoveryCodeResult } from "./settings";
 
 type AuthStatus = {
   setup_required: boolean;
   authenticated: boolean;
   username?: string | null;
   csrf_token?: string | null;
+  recovery_code?: string | null;
 };
 
 type Service = {
@@ -196,7 +199,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.14.0";
+const APP_VERSION = "0.15.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -324,6 +327,8 @@ function AuthScreen({ status, onAuthenticated }: { status: AuthStatus; onAuthent
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [recovering, setRecovering] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const isSetup = status.setup_required;
@@ -331,46 +336,62 @@ function AuthScreen({ status, onAuthenticated }: { status: AuthStatus; onAuthent
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
-    if (isSetup && password !== confirmPassword) {
+    if ((isSetup || recovering) && password !== confirmPassword) {
       setError("Passwords do not match.");
       return;
     }
     setBusy(true);
     try {
-      const result = await api<AuthStatus>(isSetup ? "/api/auth/setup" : "/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ username, password }),
-      });
+      const path = isSetup ? "/api/auth/setup" : recovering ? "/api/auth/recover" : "/api/auth/login";
+      const body = recovering
+        ? { username, recovery_code: recoveryCode, new_password: password }
+        : { username, password };
+      const result = await api<AuthStatus>(path, { method: "POST", body: JSON.stringify(body) });
       onAuthenticated(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to sign in.");
+      setError(err instanceof Error ? err.message : recovering ? "Unable to recover the account." : "Unable to sign in.");
     } finally {
       setBusy(false);
     }
   }
 
+  function enterRecovery() {
+    setRecovering(true); setError(""); setPassword(""); setConfirmPassword("");
+  }
+
+  function leaveRecovery() {
+    setRecovering(false); setError(""); setRecoveryCode(""); setPassword(""); setConfirmPassword("");
+  }
+
+  const title = isSetup ? "Create your admin account" : recovering ? "Recover your account" : "Welcome back";
+  const subhead = isSetup
+    ? "This account protects your dashboard and service configuration. You'll receive a one-time recovery code after setup."
+    : recovering
+      ? "Enter the recovery code you saved earlier. A successful reset replaces it with a new recovery code."
+      : "Sign in to open your homelab dashboard.";
+
   return (
     <main className="auth-shell">
       <section className="auth-card">
-        <div className="auth-mark"><Server size={25} /></div>
+        <div className="auth-mark">{recovering ? <KeyRound size={25} /> : <Server size={25} />}</div>
         <p className="eyebrow">SELF-HOSTED CONTROL CENTER</p>
-        <h1>{isSetup ? "Create your admin account" : "Welcome back"}</h1>
-        <p className="subhead">
-          {isSetup
-            ? "This account protects your dashboard and service configuration."
-            : "Sign in to open your homelab dashboard."}
-        </p>
+        <h1>{title}</h1>
+        <p className="subhead">{subhead}</p>
 
         <form className="form-stack" onSubmit={submit}>
           <label>
             <span>Username</span>
             <input value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} autoComplete="username" required autoFocus />
           </label>
+          {recovering && <label>
+            <span>Recovery code</span>
+            <input value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} autoComplete="off" placeholder="HD-XXXX-XXXX-…" required />
+          </label>}
           <label>
-            <span>Password</span>
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} autoComplete={isSetup ? "new-password" : "current-password"} required />
+            <span>{recovering ? "New password" : "Password"}</span>
+            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} autoComplete={isSetup || recovering ? "new-password" : "current-password"} required />
           </label>
-          {isSetup && (
+          {(isSetup || recovering) && (
             <label>
               <span>Confirm password</span>
               <input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={10} autoComplete="new-password" required />
@@ -378,11 +399,35 @@ function AuthScreen({ status, onAuthenticated }: { status: AuthStatus; onAuthent
           )}
           {error && <div className="notice compact">{error}</div>}
           <button className="primary wide" disabled={busy} type="submit">
-            {busy ? "Working…" : isSetup ? "Create dashboard" : "Sign in"}
+            {busy ? "Working…" : isSetup ? "Create dashboard" : recovering ? "Reset password" : "Sign in"}
           </button>
+          {!isSetup && !recovering && <button className="auth-link" type="button" onClick={enterRecovery}>Forgot password?</button>}
+          {recovering && <button className="auth-link" type="button" onClick={leaveRecovery}>Back to sign in</button>}
         </form>
       </section>
     </main>
+  );
+}
+
+function RecoveryCodeModal({ code, onClose }: { code: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
+  async function copyCode() {
+    try { await navigator.clipboard.writeText(code); setCopied(true); setCopyError(""); }
+    catch { setCopyError("Could not copy automatically. Select the code and copy it manually."); }
+  }
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-code-title">
+        <header className="modal-header"><div><p className="eyebrow">ACCOUNT RECOVERY</p><h2 id="recovery-code-title">Save your recovery code</h2><p className="modal-subhead">This code is shown only once. Store it somewhere safe outside Homelab Dashboard.</p></div></header>
+        <div className="recovery-modal-body">
+          <div className="recovery-code-box prominent"><span>Your recovery code</span><code>{code}</code><button className="secondary" type="button" onClick={() => void copyCode()}><Copy size={16} /> {copied ? "Copied" : "Copy code"}</button></div>
+          <div className="settings-callout"><strong>What it does</strong><span>If you forget your password, choose Forgot password? on the login screen and enter this code. After it is used, Homelab Dashboard automatically replaces it with a new code.</span></div>
+          {copyError && <div className="notice compact">{copyError}</div>}
+          <button className="primary wide" type="button" onClick={onClose}>I saved my recovery code</button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1350,6 +1395,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [connections, setConnections] = useState<ManagementConnection[]>([]);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
+  const [oneTimeRecoveryCode, setOneTimeRecoveryCode] = useState<string | null>(auth.recovery_code ?? null);
   const [editingWidget, setEditingWidget] = useState<DashboardWidget | null | undefined>(undefined);
   const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>({ dashboard_title: "Homelab Dashboard", show_greeting: true, telemetry_refresh_seconds: 15, update_status_refresh_seconds: 15, active_refresh_seconds: 3, update_check_interval_hours: 12 });
   const [extensions, setExtensions] = useState<ExtensionDescriptor[]>([]);
@@ -1388,6 +1435,22 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   async function loadExtensions() {
     try { setExtensions(await api<ExtensionDescriptor[]>("/api/extensions")); }
     catch { /* Extension inventory is informational. */ }
+  }
+
+  async function loadAccount() {
+    try { setAccountSummary(await api<AccountSummary>("/api/account")); }
+    catch { /* Account details are available only after authentication and migration. */ }
+  }
+
+  async function changeAccountPassword(currentPassword: string, newPassword: string) {
+    await api<void>("/api/account/change-password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }, auth.csrf_token);
+    await loadAccount();
+  }
+
+  async function regenerateAccountRecoveryCode(currentPassword: string): Promise<RecoveryCodeResult> {
+    const result = await api<RecoveryCodeResult>("/api/account/recovery-code", { method: "POST", body: JSON.stringify({ current_password: currentPassword }) }, auth.csrf_token);
+    await loadAccount();
+    return result;
   }
 
   async function saveSettings(next: DashboardSettings) {
@@ -1503,7 +1566,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   useEffect(() => {
-    void Promise.all([loadServices(), loadWidgets(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData(), loadSettings(), loadExtensions()]);
+    void Promise.all([loadServices(), loadWidgets(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData(), loadSettings(), loadExtensions(), loadAccount()]);
     void refreshTelemetry();
     const onVisible = () => { if (document.visibilityState === "visible") { void refreshTelemetry(); void loadUpdateData(); void loadWidgets(); } };
     document.addEventListener("visibilitychange", onVisible);
@@ -1852,7 +1915,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
             <button className={`command-button account-command ${accountMenuOpen ? "active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={accountMenuOpen} title="Dashboard menu" onClick={() => { setAccountMenuOpen((value) => !value); setAddMenuOpen(false); }}><Settings size={17} /><span className="command-label">Menu</span><ChevronDown className="command-chevron" size={14} /></button>
             {accountMenuOpen && <div className="command-menu command-menu-right" role="menu">
               <div className="command-menu-user"><strong>{auth.username}</strong><small>Administrator</small></div>
-              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); void loadExtensions(); }}><Settings size={16} /><span><strong>Settings</strong><small>Dashboard, monitoring and extensions</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); void loadExtensions(); void loadAccount(); }}><Settings size={16} /><span><strong>Settings</strong><small>Account, dashboard and extensions</small></span></button>
               <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setConnectionsOpen(true); void loadConnections(); }}><Cable size={16} /><span><strong>Connections</strong><small>TrueNAS and future controllers</small></span></button>
               <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={16} /><span><strong>Appearance</strong><small>Themes and visual editor</small></span></button>
               <div className="command-menu-separator" />
@@ -2054,9 +2117,12 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
       <footer className="app-footer">Homelab Dashboard v{APP_VERSION}</footer>
 
+      {oneTimeRecoveryCode && <RecoveryCodeModal code={oneTimeRecoveryCode} onClose={() => setOneTimeRecoveryCode(null)} />}
+
       {settingsOpen && (
         <SettingsModal
           settings={dashboardSettings}
+          account={accountSummary}
           extensions={extensions}
           currentTheme={BUILTIN_THEME_BY_ID[appearance.theme_id]?.name ?? appearance.custom_themes.find((theme) => theme.id === appearance.theme_id)?.name ?? appearance.theme_id}
           importedThemeCount={appearance.custom_themes.length}
@@ -2065,6 +2131,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           appVersion={APP_VERSION}
           onClose={() => setSettingsOpen(false)}
           onSave={saveSettings}
+          onChangePassword={changeAccountPassword}
+          onRegenerateRecoveryCode={regenerateAccountRecoveryCode}
           onOpenAppearance={() => { setAppearanceError(""); setAppearanceOpen(true); }}
           onOpenConnections={() => { setConnectionsOpen(true); void loadConnections(); }}
           onAddWidget={() => setEditingWidget(null)}

@@ -4,6 +4,28 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.15.0] - 2026-08-23
+
+### Added
+- Settings → Account section for local administrator security.
+- Authenticated password-change workflow requiring the current password.
+- High-entropy recovery codes displayed only when generated and stored only as digests.
+- Forgot-password recovery from the login screen without requiring SMTP.
+- Automatic recovery-code rotation after successful use.
+- Recent account-security activity that never logs passwords or readable recovery codes.
+- Host-side `python -m app.admin reset-password` emergency recovery command.
+- Automatic in-place account-schema migration from v0.14.x.
+
+### Changed
+- Password changes invalidate all other dashboard sessions while keeping the initiating browser signed in.
+- Password recovery invalidates every prior session before creating a fresh authenticated session.
+- New installations receive a recovery code immediately after first-run setup; upgraded installations can create one from Settings.
+
+### Security
+- Passwords remain scrypt-hashed with random salts.
+- Recovery codes use high entropy and are stored only as normalized SHA-256 digests.
+- Emergency recovery accepts the replacement password only through an interactive prompt rather than command-line arguments.
+
 ## [0.14.0] - 2026-08-23
 
 ### Added

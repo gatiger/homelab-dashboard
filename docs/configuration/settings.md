@@ -1,6 +1,6 @@
 # Settings
 
-The central **Settings** hub keeps configuration from expanding across the dashboard header. v0.14 also moves portable dashboard-builder actions into their own Dashboard section.
+The central **Settings** hub keeps configuration from expanding across the dashboard header. v0.15 adds an Account section for password and recovery management.
 
 ## General
 
@@ -11,6 +11,17 @@ General settings currently include:
 - A shortcut to add dashboard widgets.
 
 Settings are stored in the same persistent SQLite database as services and pages.
+
+## Account
+
+Account settings provide:
+
+- Change-password workflow requiring the current password.
+- Recovery-code creation/regeneration requiring the current password.
+- Recovery-code status and password-change timestamps.
+- Recent account-security activity.
+
+Changing the password invalidates other active sessions. Recovery codes are shown only when generated and are stored only as digests. See [Account recovery](account-recovery.md).
 
 ## Dashboard
 
@@ -48,4 +59,4 @@ The Extension Manager remains deliberately conservative. It inventories:
 - The built-in widget pack.
 - Imported data-only themes.
 
-Imported themes can be removed from the manager. v0.14 does **not** execute arbitrary community plugin code. The permission-aware executable extension runtime remains a later milestone.
+Imported themes can be removed from the manager. v0.15 does **not** execute arbitrary community plugin code. The permission-aware executable extension runtime remains a later milestone.
