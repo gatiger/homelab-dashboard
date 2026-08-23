@@ -1,6 +1,6 @@
 # Extension architecture direction
 
-v0.9 established the first extension-shaped feature: validated, importable theme packages. v0.10 adds a reusable integration descriptor/capability model and normalized service activity records; built-in adapters still ship with core for now, but their contract is being shaped so later community adapters can plug into the same UI safely.
+v0.9 established the first extension-shaped feature: validated, importable theme packages. v0.10 added reusable integration descriptors/capabilities, and v0.13 adds the first built-in widget runtime plus an Extension Manager inventory. Built-in adapters and widgets still ship with core for now, but their contracts are being shaped so later community packages can plug into the same UI safely.
 
 The long-term extension system is intended to support several capability classes without requiring users to edit Homelab Dashboard source code:
 
@@ -12,7 +12,7 @@ The long-term extension system is intended to support several capability classes
 
 Extensions should declare a manifest version, Homelab Dashboard compatibility range, extension type, and requested capabilities. Extensions must not automatically inherit access to Docker, saved service credentials, the filesystem, or unrelated integrations.
 
-The theme format is intentionally the first implementation because it lets the project exercise import, validation, persistence, compatibility, enable/disable, and removal flows without allowing executable community code.
+The theme format is intentionally the first importable implementation because it lets the project exercise validation, persistence, compatibility, selection, inventory, and removal flows without allowing executable community code. v0.13 widgets remain built into core; arbitrary widget/integration code is intentionally deferred until the permission model and SDK are ready.
 
 ## Future 3D Printer Center
 

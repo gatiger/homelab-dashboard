@@ -44,7 +44,7 @@ UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 36
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.12.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.13.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -377,6 +377,180 @@ class AppearanceSettings(BaseModel):
     custom_themes: list[ThemePackage] = Field(default_factory=list)
 
 
+class DashboardSettings(BaseModel):
+    dashboard_title: str = Field(default=APP_NAME, min_length=1, max_length=80)
+    show_greeting: bool = True
+    telemetry_refresh_seconds: int = Field(default=15, ge=5, le=300)
+    update_status_refresh_seconds: int = Field(default=15, ge=5, le=300)
+    active_refresh_seconds: int = Field(default=3, ge=1, le=30)
+    update_check_interval_hours: float = Field(default=12, ge=0, le=168)
+
+    @field_validator("dashboard_title")
+    @classmethod
+    def trim_dashboard_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Dashboard title cannot be blank")
+        return value
+
+
+WidgetType = Literal["clock", "note", "bookmarks", "system_summary"]
+
+
+class DashboardWidgetBase(BaseModel):
+    type: WidgetType
+    title: str = Field(min_length=1, max_length=80)
+    page_id: int = Field(default=1, ge=1)
+    category: str = Field(default="Widgets", min_length=1, max_length=80)
+    card_size: Literal["compact", "standard", "wide"] = "standard"
+    sort_order: int = Field(default=0, ge=0, le=1000000)
+    enabled: bool = True
+    config: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("title", "category")
+    @classmethod
+    def trim_widget_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+
+class DashboardWidgetCreate(DashboardWidgetBase):
+    pass
+
+
+class DashboardWidgetUpdate(DashboardWidgetBase):
+    pass
+
+
+class DashboardWidget(DashboardWidgetBase):
+    id: int
+    created_at: str
+    updated_at: str
+
+
+class WidgetLayoutUpdate(BaseModel):
+    card_size: Literal["compact", "standard", "wide"] | None = None
+    enabled: bool | None = None
+
+
+class WidgetReorder(BaseModel):
+    page_id: int = Field(default=1, ge=1)
+    category: str = Field(min_length=1, max_length=80)
+    ordered_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class ExtensionDescriptor(BaseModel):
+    id: str
+    name: str
+    type: Literal["core", "theme", "widget_pack"]
+    version: str
+    author: str
+    description: str
+    source: Literal["built_in", "imported"]
+    active: bool = True
+    removable: bool = False
+
+
+SETTINGS_DEFAULTS: dict[str, str] = {
+    "dashboard_title": APP_NAME,
+    "show_greeting": "1",
+    "telemetry_refresh_seconds": "15",
+    "update_status_refresh_seconds": "15",
+    "active_refresh_seconds": "3",
+    "update_check_interval_hours": str(UPDATE_CHECK_INTERVAL_HOURS),
+}
+
+
+def read_dashboard_settings(connection: sqlite3.Connection | None = None) -> DashboardSettings:
+    owns_connection = connection is None
+    current = connection or sqlite3.connect(DB_PATH)
+    if owns_connection:
+        current.row_factory = sqlite3.Row
+    try:
+        rows = current.execute(
+            "SELECT key, value FROM app_settings WHERE key IN (?, ?, ?, ?, ?, ?)",
+            tuple(SETTINGS_DEFAULTS.keys()),
+        ).fetchall()
+        values = dict(SETTINGS_DEFAULTS)
+        values.update({row["key"]: row["value"] for row in rows})
+        return DashboardSettings(
+            dashboard_title=values["dashboard_title"],
+            show_greeting=values["show_greeting"] == "1",
+            telemetry_refresh_seconds=int(float(values["telemetry_refresh_seconds"])),
+            update_status_refresh_seconds=int(float(values["update_status_refresh_seconds"])),
+            active_refresh_seconds=int(float(values["active_refresh_seconds"])),
+            update_check_interval_hours=float(values["update_check_interval_hours"]),
+        )
+    finally:
+        if owns_connection:
+            current.close()
+
+
+def save_dashboard_settings(connection: sqlite3.Connection, settings: DashboardSettings) -> None:
+    values = {
+        "dashboard_title": settings.dashboard_title,
+        "show_greeting": "1" if settings.show_greeting else "0",
+        "telemetry_refresh_seconds": str(settings.telemetry_refresh_seconds),
+        "update_status_refresh_seconds": str(settings.update_status_refresh_seconds),
+        "active_refresh_seconds": str(settings.active_refresh_seconds),
+        "update_check_interval_hours": str(settings.update_check_interval_hours),
+    }
+    for key, value in values.items():
+        connection.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def normalize_widget_config(widget_type: WidgetType, config: dict[str, object]) -> dict[str, object]:
+    if widget_type == "clock":
+        clock_format = str(config.get("format", "12"))
+        if clock_format not in {"12", "24"}:
+            clock_format = "12"
+        timezone_name = str(config.get("timezone", "local")).strip()[:80] or "local"
+        return {
+            "format": clock_format,
+            "show_seconds": bool(config.get("show_seconds", False)),
+            "show_date": bool(config.get("show_date", True)),
+            "timezone": timezone_name,
+        }
+    if widget_type == "note":
+        return {"text": str(config.get("text", ""))[:4000]}
+    if widget_type == "bookmarks":
+        raw_items = config.get("items", [])
+        clean_items: list[dict[str, str]] = []
+        if isinstance(raw_items, list):
+            for item in raw_items[:12]:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label", "")).strip()[:80]
+                url = str(item.get("url", "")).strip()[:500]
+                parsed = urlparse(url)
+                if label and parsed.scheme in {"http", "https"} and parsed.netloc:
+                    clean_items.append({"label": label, "url": url})
+        return {"items": clean_items}
+    return {
+        "show_services": bool(config.get("show_services", True)),
+        "show_updates": bool(config.get("show_updates", True)),
+        "show_connections": bool(config.get("show_connections", True)),
+    }
+
+
+def row_to_widget(row: sqlite3.Row) -> DashboardWidget:
+    try:
+        config = json.loads(row["config_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        config = {}
+    return DashboardWidget(
+        id=row["id"], type=row["type"], title=row["title"], page_id=row["page_id"], category=row["category"],
+        card_size=row["card_size"], sort_order=row["sort_order"], enabled=bool(row["enabled"]),
+        config=normalize_widget_config(row["type"], config if isinstance(config, dict) else {}),
+        created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
 StatusState = Literal["online", "degraded", "offline", "disabled", "unchecked"]
 
 
@@ -589,8 +763,12 @@ def ensure_category_layouts(connection: sqlite3.Connection) -> None:
         categories = [
             row["category"]
             for row in connection.execute(
-                "SELECT category FROM services WHERE page_id = ? GROUP BY category COLLATE NOCASE ORDER BY category COLLATE NOCASE",
-                (page_id,),
+                """SELECT category FROM (
+                       SELECT category FROM services WHERE page_id = ?
+                       UNION ALL
+                       SELECT category FROM dashboard_widgets WHERE page_id = ?
+                   ) GROUP BY category COLLATE NOCASE ORDER BY category COLLATE NOCASE""",
+                (page_id, page_id),
             ).fetchall()
         ]
         next_order = int(connection.execute(
@@ -719,6 +897,21 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS dashboard_widgets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                page_id INTEGER NOT NULL DEFAULT 1,
+                category TEXT NOT NULL DEFAULT 'Widgets',
+                card_size TEXT NOT NULL DEFAULT 'standard',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(page_id) REFERENCES dashboard_pages(id) ON DELETE RESTRICT
+            );
+
             CREATE TABLE IF NOT EXISTS service_update_state (
                 service_id INTEGER PRIMARY KEY,
                 provider TEXT NOT NULL DEFAULT 'none',
@@ -754,6 +947,8 @@ def init_db() -> None:
         migrate_legacy_truenas_connections(connection)
         ensure_default_page(connection)
         connection.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme_id', 'system')")
+        for setting_key, setting_value in SETTINGS_DEFAULTS.items():
+            connection.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)", (setting_key, setting_value))
         ensure_category_layouts(connection)
         now = iso_now()
         connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
@@ -763,26 +958,35 @@ def init_db() -> None:
 def automatic_update_check_loop() -> None:
     # Give the application and optional agent time to settle after startup.
     time.sleep(60)
-    while UPDATE_CHECK_INTERVAL_HOURS > 0:
+    last_run = 0.0
+    while True:
+        interval_hours = UPDATE_CHECK_INTERVAL_HOURS
         try:
             with db() as connection:
+                settings = read_dashboard_settings(connection)
+                interval_hours = settings.update_check_interval_hours
                 active_job = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued', 'running') LIMIT 1").fetchone()
-                rows = [] if active_job else connection.execute("SELECT * FROM services WHERE management_provider != 'none' ORDER BY name COLLATE NOCASE").fetchall()
-            for row in rows:
-                try:
-                    check_service_update(row)
-                except Exception:
-                    pass
+            now = time.monotonic()
+            due = interval_hours > 0 and (last_run == 0.0 or now - last_run >= interval_hours * 3600)
+            if due and not active_job:
+                with db() as connection:
+                    rows = connection.execute("SELECT * FROM services WHERE management_provider != 'none' ORDER BY name COLLATE NOCASE").fetchall()
+                for row in rows:
+                    try:
+                        check_service_update(row)
+                    except Exception:
+                        pass
+                last_run = time.monotonic()
         except Exception:
             pass
-        time.sleep(max(3600, UPDATE_CHECK_INTERVAL_HOURS * 3600))
+        # Short wake interval lets Settings changes take effect without a restart.
+        time.sleep(300)
 
 
 @app.on_event("startup")
 def startup() -> None:
     init_db()
-    if UPDATE_CHECK_INTERVAL_HOURS > 0:
-        threading.Thread(target=automatic_update_check_loop, daemon=True, name="update-check-loop").start()
+    threading.Thread(target=automatic_update_check_loop, daemon=True, name="update-check-loop").start()
 
 
 def get_fernet() -> Fernet:
@@ -992,7 +1196,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.12.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.13.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -1059,7 +1263,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.12.0", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": "HomelabDashboard/0.13.0", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -2326,7 +2530,7 @@ def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[Inte
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.12.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.13.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -2443,6 +2647,132 @@ def delete_theme(theme_id: str, _: SessionUser = Depends(require_write_auth)) ->
     return AppearanceSettings(theme_id=selected, custom_themes=custom_themes)
 
 
+@app.get("/api/settings", response_model=DashboardSettings)
+def get_dashboard_settings(_: SessionUser = Depends(require_auth)) -> DashboardSettings:
+    with db() as connection:
+        return read_dashboard_settings(connection)
+
+
+@app.put("/api/settings", response_model=DashboardSettings)
+def update_dashboard_settings(payload: DashboardSettings, _: SessionUser = Depends(require_write_auth)) -> DashboardSettings:
+    with db() as connection:
+        save_dashboard_settings(connection, payload)
+        return read_dashboard_settings(connection)
+
+
+@app.get("/api/widgets", response_model=list[DashboardWidget])
+def list_widgets(_: SessionUser = Depends(require_auth)) -> list[DashboardWidget]:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT * FROM dashboard_widgets ORDER BY page_id, category COLLATE NOCASE, sort_order, title COLLATE NOCASE"
+        ).fetchall()
+    return [row_to_widget(row) for row in rows]
+
+
+@app.post("/api/widgets", response_model=DashboardWidget, status_code=status.HTTP_201_CREATED)
+def create_widget(payload: DashboardWidgetCreate, _: SessionUser = Depends(require_write_auth)) -> DashboardWidget:
+    now = iso_now()
+    with db() as connection:
+        require_page(connection, payload.page_id)
+        ensure_category_layout(connection, payload.page_id, payload.category)
+        sort_order = payload.sort_order or int(connection.execute(
+            """SELECT COALESCE(MAX(sort_order), 0) + 1 FROM (
+                   SELECT sort_order FROM services WHERE page_id = ? AND category = ? COLLATE NOCASE
+                   UNION ALL SELECT sort_order FROM dashboard_widgets WHERE page_id = ? AND category = ? COLLATE NOCASE
+               )""",
+            (payload.page_id, payload.category, payload.page_id, payload.category),
+        ).fetchone()[0])
+        config = normalize_widget_config(payload.type, payload.config)
+        cursor = connection.execute(
+            """INSERT INTO dashboard_widgets
+               (type, title, page_id, category, card_size, sort_order, enabled, config_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (payload.type, payload.title, payload.page_id, payload.category, payload.card_size, sort_order, int(payload.enabled), json.dumps(config, separators=(",", ":")), now, now),
+        )
+        row = connection.execute("SELECT * FROM dashboard_widgets WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return row_to_widget(row)
+
+
+@app.put("/api/widgets/{widget_id}", response_model=DashboardWidget)
+def update_widget(widget_id: int, payload: DashboardWidgetUpdate, _: SessionUser = Depends(require_write_auth)) -> DashboardWidget:
+    with db() as connection:
+        if not connection.execute("SELECT 1 FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Widget not found")
+        require_page(connection, payload.page_id)
+        ensure_category_layout(connection, payload.page_id, payload.category)
+        config = normalize_widget_config(payload.type, payload.config)
+        connection.execute(
+            """UPDATE dashboard_widgets SET type = ?, title = ?, page_id = ?, category = ?, card_size = ?,
+               sort_order = ?, enabled = ?, config_json = ?, updated_at = ? WHERE id = ?""",
+            (payload.type, payload.title, payload.page_id, payload.category, payload.card_size, payload.sort_order, int(payload.enabled), json.dumps(config, separators=(",", ":")), iso_now(), widget_id),
+        )
+        row = connection.execute("SELECT * FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone()
+    return row_to_widget(row)
+
+
+@app.patch("/api/widgets/{widget_id}/layout", response_model=DashboardWidget)
+def update_widget_layout(widget_id: int, payload: WidgetLayoutUpdate, _: SessionUser = Depends(require_write_auth)) -> DashboardWidget:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Widget not found")
+        connection.execute(
+            "UPDATE dashboard_widgets SET card_size = ?, enabled = ?, updated_at = ? WHERE id = ?",
+            (payload.card_size or row["card_size"], int(payload.enabled) if payload.enabled is not None else row["enabled"], iso_now(), widget_id),
+        )
+        row = connection.execute("SELECT * FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone()
+    return row_to_widget(row)
+
+
+@app.post("/api/widgets/reorder", response_model=list[DashboardWidget])
+def reorder_widgets(payload: WidgetReorder, _: SessionUser = Depends(require_write_auth)) -> list[DashboardWidget]:
+    if len(payload.ordered_ids) != len(set(payload.ordered_ids)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate widget ids in reorder request")
+    with db() as connection:
+        existing = [row["id"] for row in connection.execute(
+            "SELECT id FROM dashboard_widgets WHERE page_id = ? AND category = ? COLLATE NOCASE ORDER BY sort_order, id",
+            (payload.page_id, payload.category),
+        ).fetchall()]
+        if set(existing) != set(payload.ordered_ids):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Widget reorder must include every widget in the category")
+        for position, widget_id in enumerate(payload.ordered_ids, start=1):
+            connection.execute("UPDATE dashboard_widgets SET sort_order = ?, updated_at = ? WHERE id = ?", (position, iso_now(), widget_id))
+        rows = connection.execute(
+            "SELECT * FROM dashboard_widgets WHERE page_id = ? AND category = ? COLLATE NOCASE ORDER BY sort_order, title COLLATE NOCASE",
+            (payload.page_id, payload.category),
+        ).fetchall()
+    return [row_to_widget(row) for row in rows]
+
+
+@app.delete("/api/widgets/{widget_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_widget(widget_id: int, _: SessionUser = Depends(require_write_auth)) -> Response:
+    with db() as connection:
+        cursor = connection.execute("DELETE FROM dashboard_widgets WHERE id = ?", (widget_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Widget not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/extensions", response_model=list[ExtensionDescriptor])
+def list_extensions(_: SessionUser = Depends(require_auth)) -> list[ExtensionDescriptor]:
+    built_in = [
+        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.13.0", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.13.0", author="Homelab Dashboard", description="Clock, note, bookmarks, and system-summary dashboard widgets.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.13.0", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
+    ]
+    with db() as connection:
+        selected = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()
+        selected_id = selected["value"] if selected else "system"
+        themes = list_theme_rows(connection)
+    imported = [
+        ExtensionDescriptor(
+            id=f"theme.{theme.id}", name=theme.name, type="theme", version=theme.version, author=theme.author,
+            description=theme.description or "Imported visual theme", source="imported", active=selected_id == theme.id, removable=True,
+        ) for theme in themes
+    ]
+    return built_in + imported
+
+
 @app.get("/api/pages", response_model=list[DashboardPage])
 def list_pages(_: SessionUser = Depends(require_auth)) -> list[DashboardPage]:
     with db() as connection:
@@ -2510,8 +2840,9 @@ def delete_page(page_id: int, _: SessionUser = Depends(require_write_auth)) -> R
         if page["is_default"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The default Home page cannot be deleted")
         service_count = int(connection.execute("SELECT COUNT(*) FROM services WHERE page_id = ?", (page_id,)).fetchone()[0])
-        if service_count:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Move or remove services from this page before deleting it")
+        widget_count = int(connection.execute("SELECT COUNT(*) FROM dashboard_widgets WHERE page_id = ?", (page_id,)).fetchone()[0])
+        if service_count or widget_count:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Move or remove services and widgets from this page before deleting it")
         connection.execute("DELETE FROM dashboard_pages WHERE id = ?", (page_id,))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -2527,6 +2858,9 @@ def list_categories(_: SessionUser = Depends(require_auth)) -> list[CategoryLayo
             WHERE EXISTS (
                 SELECT 1 FROM services s
                 WHERE s.page_id = c.page_id AND s.category = c.name COLLATE NOCASE
+            ) OR EXISTS (
+                SELECT 1 FROM dashboard_widgets w
+                WHERE w.page_id = c.page_id AND w.category = c.name COLLATE NOCASE
             )
             ORDER BY c.page_id, c.sort_order, c.name COLLATE NOCASE
             """
@@ -2560,8 +2894,12 @@ def reorder_categories(payload: CategoryReorder, _: SessionUser = Depends(requir
         current = [
             row["category"]
             for row in connection.execute(
-                "SELECT category FROM services WHERE page_id = ? GROUP BY category COLLATE NOCASE ORDER BY category COLLATE NOCASE",
-                (payload.page_id,),
+                """SELECT category FROM (
+                       SELECT category FROM services WHERE page_id = ?
+                       UNION ALL
+                       SELECT category FROM dashboard_widgets WHERE page_id = ?
+                   ) GROUP BY category COLLATE NOCASE ORDER BY category COLLATE NOCASE""",
+                (payload.page_id, payload.page_id),
             ).fetchall()
         ]
         if {name.casefold() for name in current} != {name.casefold() for name in payload.ordered_names}:
@@ -2576,9 +2914,11 @@ def reorder_categories(payload: CategoryReorder, _: SessionUser = Depends(requir
             """
             SELECT c.page_id, c.name, c.sort_order, c.collapsed
             FROM category_layouts c
-            WHERE c.page_id = ? AND EXISTS (
+            WHERE c.page_id = ? AND (EXISTS (
                 SELECT 1 FROM services s WHERE s.page_id = c.page_id AND s.category = c.name COLLATE NOCASE
-            )
+            ) OR EXISTS (
+                SELECT 1 FROM dashboard_widgets w WHERE w.page_id = c.page_id AND w.category = c.name COLLATE NOCASE
+            ))
             ORDER BY c.sort_order, c.name COLLATE NOCASE
             """,
             (payload.page_id,),

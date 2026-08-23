@@ -16,7 +16,7 @@
 - **Production application container:** Nginx serves the React/TypeScript frontend and proxies `/api` to the local FastAPI process inside the same image. The source tree still keeps frontend and backend concerns separate for development.
 - **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata (identifier, name, category, icon, common port, description, aliases, and capability hints).
 - **Backend:** FastAPI authentication, configuration, health checks, secret storage, and integration adapters.
-- **Database:** SQLite in a persistent Docker volume. Appearance selection and imported theme manifests are stored alongside dashboard configuration.
+- **Database:** SQLite in a persistent Docker volume. Services, pages, widgets, Settings, appearance selection, imported theme manifests, connections, and update history are stored alongside dashboard configuration.
 - **Theme layer:** Frontend components consume validated design tokens. Built-in and imported themes share the same data shape; imported theme packages are non-executable JSON.
 - **Integration adapters:** Service-specific backend functions for supported rich cards; unsupported catalog entries still work as generic monitored links.
 - **Docker access (optional):** The base deployment has no Docker socket access. Read-only insight uses a restricted socket proxy. One-click Docker Compose updates use a separate update-agent sidecar on a private internal network; only that agent receives the raw socket.
@@ -44,7 +44,7 @@ Credentials remain backend-only. API-key integrations use the existing encrypted
 
 Application integrations and management providers are intentionally separate. A Sonarr adapter can provide health, queue, and activity while a Docker Compose or TrueNAS provider controls how that Sonarr instance is updated. This avoids service/platform combinations such as separate Sonarr-Docker and Sonarr-TrueNAS adapters.
 
-Each service may optionally store a `management_provider`, provider target, and reusable management-connection reference. v0.12 ships two providers:
+Each service may optionally store a `management_provider`, provider target, and reusable management-connection reference. The current release ships two providers:
 
 - **Docker Compose / Dockge:** the dashboard talks to an optional internal update-agent. The agent discovers Compose project/service labels from Docker, rejects projects outside an allow-listed stacks root, pulls the image, recreates only the selected Compose service, waits for Docker health/running state, and restores the previous image when health verification fails. Stack files are mounted read-only and the agent has no arbitrary shell-command API.
 - **TrueNAS Apps:** the backend talks through a reusable encrypted TrueNAS Connection over the versioned JSON-RPC WebSocket API and invokes the TrueNAS app-management methods. TrueNAS remains the system of record for its apps; Homelab Dashboard does not manipulate the underlying app containers directly. Visible TrueNAS cards are optional telemetry views, not credential controllers.
@@ -52,6 +52,12 @@ Each service may optionally store a `management_provider`, provider target, and 
 Update state and history are stored in SQLite. Update work runs in background threads so browser/API requests return immediately and the frontend polls job progress. Update All is sequential and stops on failure.
 
 The update-agent is a privileged component because Docker socket access is effectively host-level control. It is optional, isolated from the public network, token-protected, and intentionally narrower than exposing Docker write APIs directly to the main dashboard.
+
+## Settings and widget model
+
+Dashboard-wide preferences are persisted in the existing `app_settings` store and exposed through authenticated Settings endpoints. v0.13 uses these preferences for the dashboard title/greeting, browser telemetry refresh cadence, cached update-state refresh cadence, active-job refresh cadence, and the server-side update-discovery interval. Browser refresh timing and update discovery remain intentionally separate so the UI can feel live without repeatedly querying registries or platform APIs.
+
+Built-in dashboard widgets are stored in `dashboard_widgets`. A widget has a type, title, page/category placement, card size, sort order, enabled state, and validated JSON configuration. v0.13 ships clock, note, bookmarks, and system-summary widgets. Widget configuration is data-only; the current Extension Manager does not execute third-party JavaScript, Python, CSS, or other arbitrary plugin code.
 
 ## Layout model
 

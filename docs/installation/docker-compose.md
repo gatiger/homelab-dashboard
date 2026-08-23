@@ -31,7 +31,7 @@ DASHBOARD_PORT=8082
 `latest` follows the newest stable release. For predictable upgrades, pin a version:
 
 ```env
-DASHBOARD_VERSION=0.12.0
+DASHBOARD_VERSION=0.13.0
 ```
 
 ## Optional local Docker statistics

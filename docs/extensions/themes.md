@@ -5,10 +5,10 @@ Homelab Dashboard v0.9 introduces a deliberately limited theme extension format.
 ## Importing a theme
 
 1. Sign in to Homelab Dashboard.
-2. Choose **Appearance**.
+2. Open **Settings → Appearance**.
 3. Select **Import theme**.
 4. Choose a `.json` theme package.
-5. Select the imported theme from the Appearance screen.
+5. Select the imported theme from the Appearance manager.
 
 Imported themes are stored in the dashboard's persistent SQLite data and therefore survive container updates.
 

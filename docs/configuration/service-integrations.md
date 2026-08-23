@@ -2,7 +2,7 @@
 
 Homelab Dashboard cards always work as normal monitored links. The integrations below are optional and add richer read-only information when credentials are configured.
 
-## Supported in v0.12
+## Supported in v0.13
 
 | Service | Authentication used by dashboard | Rich information |
 |---|---|---|
@@ -51,6 +51,6 @@ Create an Immich API key with sufficient permission to read server information/s
 
 ## TrueNAS compatibility note
 
-v0.12 prefers the current versioned JSON-RPC WebSocket API (`/api/current`) for TrueNAS telemetry and management. The older REST v2 path remains only as a read-only telemetry fallback for older installations; it is not used for TrueNAS App upgrades.
+v0.13 prefers the current versioned JSON-RPC WebSocket API (`/api/current`) for TrueNAS telemetry and management. The older REST v2 path remains only as a read-only telemetry fallback for older installations; it is not used for TrueNAS App upgrades.
 
 For TrueNAS App management, configure a reusable **TrueNAS Connection** with an HTTPS URL plus API key. Saving the API-key owner username is recommended for current user-linked key authentication and future compatibility. A separate visible TrueNAS card is only needed if you want TrueNAS telemetry on the dashboard. Use a dedicated, least-privileged TrueNAS account/key that has only the roles needed for the operations you intend to allow.

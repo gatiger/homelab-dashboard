@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.12.0
+ghcr.io/gatiger/homelab-dashboard:0.13.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -85,6 +85,11 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Reusable management Connections so platform credentials do not require visible controller cards
 - Standardized managed-card update indicators with glowing current/available/error states
 - Automatic in-browser telemetry/update-state refresh without manually reloading the page
+- Central Settings hub for General, Appearance, Connections, Monitoring, Extensions, and About
+- Configurable browser telemetry/update refresh intervals and scheduled update-discovery interval
+- Built-in Clock/Date, Note, Bookmarks, and Dashboard Summary widgets
+- Widgets can be assigned to any page/category and use Compact/Standard/Wide card sizes
+- Extension Manager inventory for built-in modules and imported data-only theme packages
 - Sequential Update All, health verification, update history, and Docker rollback on failed health checks
 
 
@@ -100,11 +105,13 @@ docker compose -f compose.yaml -f compose.management.yaml up -d
 
 The update agent is not required for normal dashboard use. See [Update Manager](docs/configuration/update-manager.md).
 
-## Themes and extensions
+## Settings, themes, widgets, and extensions
 
-Choose **Appearance** to use System, Dark, Light, Slate, Ocean, Forest, Violet, or Amber. The System option follows the current device light/dark preference.
+Open **Settings** for General, Appearance, Connections, Monitoring, Extensions, and About. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
 
-Community themes can be imported as validated JSON packages. Theme extensions contain approved color tokens only and cannot execute CSS/JavaScript or access network services, Docker, files, or stored credentials. See [Theme extensions](docs/extensions/themes.md) and the broader [extension architecture](docs/extensions/architecture.md).
+The first built-in widget pack includes Clock & Date, Note, Bookmarks, and Dashboard Summary widgets. Widgets are stored in SQLite and can be assigned to any dashboard page/category with Compact, Standard, or Wide sizing. See [Widgets](docs/configuration/widgets.md) and [Settings](docs/configuration/settings.md).
+
+Community themes can be imported as validated JSON packages. Theme extensions contain approved color tokens only and cannot execute CSS/JavaScript or access network services, Docker, files, or stored credentials. The v0.13 Extension Manager shows installed built-in modules and imported theme packages; arbitrary executable community plugins remain a later milestone. See [Theme extensions](docs/extensions/themes.md) and the broader [extension architecture](docs/extensions/architecture.md).
 
 ## Service catalog
 
@@ -177,7 +184,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Project status / roadmap
 
-v0.12 adds reusable management Connections, standardized live/update status regions on cards, glowing semantic update indicators, and automatic in-browser refresh. Application integrations remain separate from Docker/TrueNAS lifecycle management. Future work includes widgets, broader import/export, SSO options, more management providers, and a permission-aware plugin model.
+v0.13 adds the central Settings hub, configurable refresh/update-discovery intervals, the first built-in widget runtime, and an Extension Manager inventory. Advanced dashboard import/export, page templates, deeper widget layout controls, SSO options, additional management providers, and the permission-aware executable plugin SDK remain explicitly tracked as future work.
 
 See [CHANGELOG.md](CHANGELOG.md), [ROADMAP](docs/ROADMAP.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 

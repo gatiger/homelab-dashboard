@@ -28,4 +28,4 @@ Existing Dockge cards continue to show local Docker insight for backward compati
 
 ## Write/update access is separate
 
-v0.12 does not turn the read-only socket proxy into a write proxy. One-click Compose updates use the separate `compose.management.yaml` update-agent architecture documented in [Update Manager](update-manager.md). This keeps normal Docker insight (`POST=0`) independent from lifecycle/update privileges.
+v0.13 does not turn the read-only socket proxy into a write proxy. One-click Compose updates use the separate `compose.management.yaml` update-agent architecture documented in [Update Manager](update-manager.md). This keeps normal Docker insight (`POST=0`) independent from lifecycle/update privileges.

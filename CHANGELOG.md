@@ -4,6 +4,28 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.13.0] - 2026-08-23
+
+### Added
+- Central Settings hub with General, Appearance, Connections, Monitoring, Extensions, and About sections.
+- Persistent dashboard title and optional greeting preference.
+- Configurable telemetry refresh, cached update-state refresh, active-job refresh, and server-side update-discovery interval.
+- Built-in Clock & Date, Note, Bookmarks, and Dashboard Summary widgets.
+- Persistent widget configuration with page/category assignment, visibility, and Compact/Standard/Wide sizing.
+- Extension Manager inventory showing built-in modules and imported theme packages.
+- Widget and Settings configuration documentation.
+
+### Changed
+- Appearance and Connections now live under the Settings hub instead of occupying permanent top-level header buttons.
+- Category discovery/counts and page-deletion safeguards now include widgets as well as service cards.
+- Automatic update discovery reads its interval from persisted Settings and can be changed without recreating the container.
+- Roadmap milestones were split so shipped Settings/widgets work is not conflated with still-pending advanced builder and executable extension-platform work.
+
+### Security
+- Widgets are data-only built-ins; Bookmark URLs are validated to HTTP/HTTPS by the backend.
+- v0.13 does not load arbitrary extension JavaScript, Python, CSS, shell commands, or other executable community code.
+- Existing CSRF, encrypted-secret, Docker-agent, and management-provider boundaries are unchanged.
+
 ## [0.12.0] - 2026-08-22
 
 ### Added

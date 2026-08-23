@@ -102,16 +102,17 @@
 
 ## Milestone 11 — Update Manager ✅
 
-- Separate application-integration and management-provider concepts ✅
-- Per-service update configuration and discovery ✅
-- One-click background updates from Homelab Dashboard ✅
-- Persistent update status/history and progress UI ✅
-- Sequential Update All with stop-on-failure behavior ✅
-- Docker Compose / Dockge provider through a restricted sidecar ✅
-- Docker image health verification and automatic rollback foundation ✅
-- TrueNAS App provider through the JSON-RPC WebSocket API ✅
-- Automatic/manual update checks ✅
-- Additional providers such as Portainer, Unraid, Synology, and Kubernetes 🚧
+- Separate application-integration and management-provider concepts
+- Per-service update configuration and discovery
+- One-click background updates from Homelab Dashboard
+- Persistent update status/history and progress UI
+- Sequential Update All with stop-on-failure behavior
+- Docker Compose / Dockge provider through a restricted sidecar
+- Docker image health verification and automatic rollback foundation
+- TrueNAS App provider through the JSON-RPC WebSocket API
+- Automatic/manual update checks
+
+Additional management providers are tracked separately below rather than making this completed milestone appear partially unfinished.
 
 ## Milestone 12 — Live cards and management connections ✅
 
@@ -126,24 +127,49 @@
 - Faster refresh while update jobs are active and refresh-on-tab-return
 - Server-side scheduled update discovery remains configurable (12 hours by default)
 
-## Milestone 13 — Advanced dashboard builder
+## Milestone 13 — Settings hub and built-in widgets ✅
 
-- Proper Settings area
+- Central Settings navigation for General, Appearance, Connections, Monitoring, Extensions, and About
+- Persistent dashboard title and greeting preference
+- Configurable browser telemetry/update-state polling intervals
+- Configurable server-side automatic update-discovery interval
+- Built-in Clock & Date widget
+- Built-in Note widget
+- Built-in Bookmarks widget with HTTP/HTTPS URL validation
+- Built-in Dashboard Summary widget
+- Widget page/category assignment, visibility, and Compact/Standard/Wide sizing
+- Widget-aware category counts/order and page-deletion safeguards
+- Extension Manager inventory for bundled modules and imported data-only themes
+
+## Milestone 14 — Advanced dashboard builder 🚧
+
 - Custom theme editor
+- Unified drag/reorder behavior for service and widget cards
 - Desktop and mobile layout refinements
 - Import/export of dashboard structure
 - Category naming/icon customization
 - Dashboard cloning/templates
-- Optional widgets
+- Additional built-in widget types
 
-## Milestone 14 — Open extension platform
+## Milestone 15 — Open extension platform 🚧
 
 - Versioned extension manifest
 - Permission/capability model
 - Plugin SDK and examples
 - Community extension registry
+- Installable/community integration adapter runtime
+- Community widget and service/catalog packs
 - Role-based permissions
+- Native/OIDC/SSO/reverse-proxy authentication adapters
 - OIDC / Authentik / Authelia support
+
+## Management-provider follow-ups 🚧
+
+- Portainer provider
+- Unraid provider
+- Synology provider where supported
+- Kubernetes/Helm provider
+- Private-registry credential support and richer pinned-tag discovery
 
 ## Future optional modules
 

@@ -27,6 +27,8 @@ import {
 import "./styles.css";
 import { CATALOG_BY_TYPE, CATALOG_CATEGORIES, SERVICE_CATALOG, catalogSearchText, urlPlaceholder, type CatalogEntry } from "./serviceCatalog";
 import { BUILTIN_THEMES, BUILTIN_THEME_BY_ID, THEME_TEMPLATE, applyTheme, resolveTheme, type ThemePackage } from "./themes";
+import { WidgetCard, WidgetModal, type DashboardWidget } from "./widgets";
+import { SettingsModal, type DashboardSettings, type ExtensionDescriptor } from "./settings";
 
 type AuthStatus = {
   setup_required: boolean;
@@ -193,7 +195,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.12.0";
+const APP_VERSION = "0.13.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -825,14 +827,14 @@ function ServiceModal({
 
 function PageModal({
   page,
-  serviceCount,
+  itemCount,
   onClose,
   onSaved,
   onDeleted,
   csrfToken,
 }: {
   page: DashboardPage | null;
-  serviceCount: number;
+  itemCount: number;
   onClose: () => void;
   onSaved: (page: DashboardPage) => void;
   onDeleted: () => void;
@@ -890,11 +892,11 @@ function PageModal({
             <input value={name} onChange={(event) => setName(event.target.value)} maxLength={60} placeholder="Infrastructure" required autoFocus />
           </label>
           {page?.is_default && <small>The default Home page can be renamed but cannot be deleted.</small>}
-          {page && !page.is_default && serviceCount > 0 && <small>Move or remove the {serviceCount} service{serviceCount === 1 ? "" : "s"} on this page before deleting it.</small>}
+          {page && !page.is_default && itemCount > 0 && <small>Move or remove the {itemCount} item{itemCount === 1 ? "" : "s"} on this page before deleting it.</small>}
           {error && <div className="notice compact">{error}</div>}
           <div className="modal-actions">
             {page && !page.is_default && (
-              <button className="danger-button" disabled={busy || serviceCount > 0} type="button" onClick={() => void remove()}>
+              <button className="danger-button" disabled={busy || itemCount > 0} type="button" onClick={() => void remove()}>
                 <Trash2 size={16} /> Delete page
               </button>
             )}
@@ -1227,6 +1229,7 @@ function ServiceIcon({ service }: { service: Service }) {
 
 function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
   const [services, setServices] = useState<Service[]>([]);
+  const [widgets, setWidgets] = useState<DashboardWidget[]>([]);
   const [pages, setPages] = useState<DashboardPage[]>([]);
   const [categories, setCategories] = useState<CategoryLayout[]>([]);
   const [activePageId, setActivePageId] = useState<number>(() => Number(window.localStorage.getItem("homelab-dashboard-active-page")) || 1);
@@ -1244,6 +1247,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [insightLoading, setInsightLoading] = useState(false);
   const [dragging, setDragging] = useState<{ id: number; page_id: number; category: string; favorite: boolean } | null>(null);
   const [dragOverId, setDragOverId] = useState<number | null>(null);
+  const [draggingWidget, setDraggingWidget] = useState<{ id: number; page_id: number; category: string } | null>(null);
+  const [dragOverWidgetId, setDragOverWidgetId] = useState<number | null>(null);
   const [draggingCategory, setDraggingCategory] = useState<string | null>(null);
   const [dragOverCategory, setDragOverCategory] = useState<string | null>(null);
   const [draggingPageId, setDraggingPageId] = useState<number | null>(null);
@@ -1254,6 +1259,10 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [appearanceError, setAppearanceError] = useState("");
   const [connections, setConnections] = useState<ManagementConnection[]>([]);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editingWidget, setEditingWidget] = useState<DashboardWidget | null | undefined>(undefined);
+  const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>({ dashboard_title: "Homelab Dashboard", show_greeting: true, telemetry_refresh_seconds: 15, update_status_refresh_seconds: 15, active_refresh_seconds: 3, update_check_interval_hours: 12 });
+  const [extensions, setExtensions] = useState<ExtensionDescriptor[]>([]);
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [updateStates, setUpdateStates] = useState<Record<number, ServiceUpdateState>>({});
   const [updateJobs, setUpdateJobs] = useState<UpdateJob[]>([]);
@@ -1269,6 +1278,26 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadWidgets() {
+    try { setWidgets(await api<DashboardWidget[]>("/api/widgets")); }
+    catch (err) { setError(err instanceof Error ? err.message : "Unable to load dashboard widgets."); }
+  }
+
+  async function loadSettings() {
+    try { setDashboardSettings(await api<DashboardSettings>("/api/settings")); }
+    catch { /* Use safe defaults if settings cannot be loaded. */ }
+  }
+
+  async function loadExtensions() {
+    try { setExtensions(await api<ExtensionDescriptor[]>("/api/extensions")); }
+    catch { /* Extension inventory is informational. */ }
+  }
+
+  async function saveSettings(next: DashboardSettings) {
+    const saved = await api<DashboardSettings>("/api/settings", { method: "PUT", body: JSON.stringify(next) }, auth.csrf_token);
+    setDashboardSettings(saved);
   }
 
   async function loadStructure() {
@@ -1379,21 +1408,31 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   useEffect(() => {
-    void Promise.all([loadServices(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData()]);
+    void Promise.all([loadServices(), loadWidgets(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData(), loadSettings(), loadExtensions()]);
     void refreshTelemetry();
-    const telemetryTimer = window.setInterval(() => { void refreshTelemetry(); }, 15000);
-    const updateTimer = window.setInterval(() => { void loadUpdateData(); }, 15000);
-    const onVisible = () => { if (document.visibilityState === "visible") { void refreshTelemetry(); void loadUpdateData(); } };
+    const onVisible = () => { if (document.visibilityState === "visible") { void refreshTelemetry(); void loadUpdateData(); void loadWidgets(); } };
     document.addEventListener("visibilitychange", onVisible);
-    return () => { window.clearInterval(telemetryTimer); window.clearInterval(updateTimer); document.removeEventListener("visibilitychange", onVisible); };
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
+
+  useEffect(() => {
+    const telemetryTimer = window.setInterval(() => { void refreshTelemetry(); }, Math.max(5, dashboardSettings.telemetry_refresh_seconds) * 1000);
+    return () => window.clearInterval(telemetryTimer);
+  }, [dashboardSettings.telemetry_refresh_seconds]);
+
+  useEffect(() => {
+    const updateTimer = window.setInterval(() => { void loadUpdateData(); }, Math.max(5, dashboardSettings.update_status_refresh_seconds) * 1000);
+    return () => window.clearInterval(updateTimer);
+  }, [dashboardSettings.update_status_refresh_seconds]);
 
   const hasActiveUpdateJob = updateJobs.some((job) => job.state === "queued" || job.state === "running");
   useEffect(() => {
     if (!hasActiveUpdateJob) return;
-    const activeTimer = window.setInterval(() => { void loadUpdateData(); void refreshTelemetry(); }, 2500);
+    const activeTimer = window.setInterval(() => { void loadUpdateData(); void refreshTelemetry(); }, Math.max(1, dashboardSettings.active_refresh_seconds) * 1000);
     return () => window.clearInterval(activeTimer);
-  }, [hasActiveUpdateJob]);
+  }, [hasActiveUpdateJob, dashboardSettings.active_refresh_seconds]);
+
+  useEffect(() => { document.title = dashboardSettings.dashboard_title; }, [dashboardSettings.dashboard_title]);
 
   useEffect(() => {
     const applySelected = () => applyTheme(resolveTheme(appearance.theme_id, appearance.custom_themes), appearance.theme_id);
@@ -1437,30 +1476,43 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     );
   }, [query, services, manageMode, activePageId]);
 
+  const filteredWidgets = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    const visible = (manageMode ? widgets : widgets.filter((widget) => widget.enabled)).filter((widget) => widget.page_id === activePageId);
+    if (!normalized) return visible;
+    return visible.filter((widget) => `${widget.title} ${widget.category} ${widget.type}`.toLowerCase().includes(normalized));
+  }, [query, widgets, manageMode, activePageId]);
+
   const pageCategories = useMemo(() => {
     const layouts = categories
       .filter((category) => category.page_id === activePageId)
       .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
     const known = new Set(layouts.map((category) => category.name.toLowerCase()));
-    const extras = Array.from(new Set(
-      services.filter((service) => service.page_id === activePageId).map((service) => service.category),
-    )).filter((name) => !known.has(name.toLowerCase())).sort((a, b) => a.localeCompare(b));
+    const extras = Array.from(new Set([
+      ...services.filter((service) => service.page_id === activePageId).map((service) => service.category),
+      ...widgets.filter((widget) => widget.page_id === activePageId).map((widget) => widget.category),
+    ])).filter((name) => !known.has(name.toLowerCase())).sort((a, b) => a.localeCompare(b));
     return [...layouts, ...extras.map((name, index) => ({ page_id: activePageId, name, sort_order: 100000 + index, collapsed: false }))];
-  }, [categories, services, activePageId]);
+  }, [categories, services, widgets, activePageId]);
 
   const groups = useMemo(() => {
-    const grouped = filtered.reduce<Record<string, Service[]>>((acc, service) => {
+    const serviceGrouped = filtered.reduce<Record<string, Service[]>>((acc, service) => {
       (acc[service.category] ??= []).push(service);
       return acc;
     }, {});
-    for (const categoryServices of Object.values(grouped)) {
+    for (const categoryServices of Object.values(serviceGrouped)) {
       categoryServices.sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.sort_order - b.sort_order || a.name.localeCompare(b.name));
     }
+    const widgetGrouped = filteredWidgets.reduce<Record<string, DashboardWidget[]>>((acc, widget) => {
+      (acc[widget.category] ??= []).push(widget);
+      return acc;
+    }, {});
+    for (const categoryWidgets of Object.values(widgetGrouped)) categoryWidgets.sort((a, b) => a.sort_order - b.sort_order || a.title.localeCompare(b.title));
+    const names = Array.from(new Set([...Object.keys(serviceGrouped), ...Object.keys(widgetGrouped)]));
     const order = new Map(pageCategories.map((category, index) => [category.name.toLowerCase(), index]));
-    return (Object.entries(grouped) as [string, Service[]][]).sort(([nameA], [nameB]) =>
-      (order.get(nameA.toLowerCase()) ?? 999999) - (order.get(nameB.toLowerCase()) ?? 999999) || nameA.localeCompare(nameB),
-    );
-  }, [filtered, pageCategories]);
+    return names.sort((a, b) => (order.get(a.toLowerCase()) ?? 999999) - (order.get(b.toLowerCase()) ?? 999999) || a.localeCompare(b))
+      .map((name) => [name, { services: serviceGrouped[name] ?? [], widgets: widgetGrouped[name] ?? [] }] as const);
+  }, [filtered, filteredWidgets, pageCategories]);
 
   async function toggleFavorite(service: Service) {
     const next = !service.favorite;
@@ -1501,6 +1553,30 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save card order.");
       void loadServices();
+    }
+  }
+
+  async function dropWidget(target: DashboardWidget) {
+    const source = draggingWidget;
+    setDraggingWidget(null);
+    setDragOverWidgetId(null);
+    if (!source || source.id === target.id || source.page_id !== target.page_id || source.category !== target.category || query.trim()) return;
+    const categoryItems = widgets.filter((item) => item.page_id === target.page_id && item.category === target.category).sort((a, b) => a.sort_order - b.sort_order || a.title.localeCompare(b.title));
+    const from = categoryItems.findIndex((item) => item.id === source.id);
+    const to = categoryItems.findIndex((item) => item.id === target.id);
+    if (from < 0 || to < 0) return;
+    const reordered = [...categoryItems];
+    const [moved] = reordered.splice(from, 1);
+    reordered.splice(to, 0, moved);
+    const orderMap = new Map(reordered.map((item, index) => [item.id, index + 1]));
+    setWidgets((current) => current.map((item) => item.page_id === target.page_id && item.category === target.category ? { ...item, sort_order: orderMap.get(item.id) ?? item.sort_order } : item));
+    try {
+      const updated = await api<DashboardWidget[]>("/api/widgets/reorder", { method: "POST", body: JSON.stringify({ page_id: target.page_id, category: target.category, ordered_ids: reordered.map((item) => item.id) }) }, auth.csrf_token);
+      const updatedById = new Map(updated.map((item) => [item.id, item]));
+      setWidgets((current) => current.map((item) => updatedById.get(item.id) ?? item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save widget order.");
+      void loadWidgets();
     }
   }
 
@@ -1600,6 +1676,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setAppearanceError("");
     try {
       setAppearance(await api<AppearanceSettings>("/api/appearance", { method: "PUT", body: JSON.stringify({ theme_id: themeId }) }, auth.csrf_token));
+      await loadExtensions();
     } catch (err) {
       setAppearanceError(err instanceof Error ? err.message : "Unable to change theme.");
     } finally {
@@ -1612,6 +1689,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setAppearanceError("");
     try {
       setAppearance(await api<AppearanceSettings>("/api/themes", { method: "POST", body: JSON.stringify(theme) }, auth.csrf_token));
+      await loadExtensions();
     } catch (err) {
       setAppearanceError(err instanceof Error ? err.message : "Unable to import theme.");
     } finally {
@@ -1625,6 +1703,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setAppearanceError("");
     try {
       setAppearance(await api<AppearanceSettings>(`/api/themes/${encodeURIComponent(themeId)}`, { method: "DELETE" }, auth.csrf_token));
+      await loadExtensions();
     } catch (err) {
       setAppearanceError(err instanceof Error ? err.message : "Unable to delete theme.");
     } finally {
@@ -1632,22 +1711,30 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     }
   }
 
-  const pageServiceCount = (pageId: number) => services.filter((service) => service.page_id === pageId).length;
+  const pageItemCount = (pageId: number) => services.filter((service) => service.page_id === pageId).length + widgets.filter((widget) => widget.page_id === pageId).length;
+  const visibleItemCount = filtered.length + filteredWidgets.length;
+  const widgetSummary = {
+    totalServices: services.filter((service) => service.enabled).length,
+    onlineServices: Object.values(statuses).filter((item) => item.state === "online").length,
+    offlineServices: Object.values(statuses).filter((item) => item.state === "offline").length,
+    updatesAvailable: Object.values(updateStates).filter((item) => item.state === "available").length,
+    connections: connections.length,
+  };
 
   return (
     <main className="shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">SELF-HOSTED CONTROL CENTER</p>
-          <h1>{greeting}, {auth.username}.</h1>
+          <p className="eyebrow">{dashboardSettings.dashboard_title.toUpperCase()}</p>
+          <h1>{dashboardSettings.show_greeting ? `${greeting}, ${auth.username}.` : dashboardSettings.dashboard_title}</h1>
           <p className="subhead">{activePage ? `${activePage.name} · your services and tools in one place.` : "Your services and tools in one place."}</p>
         </div>
         <div className="hero-actions">
           <button className="secondary updates-button" type="button" onClick={() => { setUpdatesOpen(true); void loadUpdateData(); }}><ArrowUpCircle size={17} /> Updates{Object.values(updateStates).filter((item) => item.state === "available").length > 0 && <span className="update-badge">{Object.values(updateStates).filter((item) => item.state === "available").length}</span>}</button>
-          <button className="secondary" type="button" onClick={() => { setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={17} /> Appearance</button>
-          <button className="secondary" type="button" onClick={() => { setConnectionsOpen(true); void loadConnections(); }}><Cable size={17} /> Connections</button>
-          <button className={`secondary ${manageMode ? "active" : ""}`} type="button" onClick={() => setManageMode((value) => !value)}><Settings size={17} /> {manageMode ? "Done" : "Manage"}</button>
+          <button className="secondary" type="button" onClick={() => { setSettingsOpen(true); void loadExtensions(); }}><Settings size={17} /> Settings</button>
+          <button className={`secondary ${manageMode ? "active" : ""}`} type="button" onClick={() => setManageMode((value) => !value)}><LayoutGrid size={17} /> {manageMode ? "Done" : "Manage"}</button>
           <button className="secondary" type="button" onClick={onLogout}><LogOut size={17} /> Sign out</button>
+          <button className="secondary" type="button" onClick={() => setEditingWidget(null)}><Plus size={18} /> Add widget</button>
           <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add service</button>
         </div>
       </header>
@@ -1678,7 +1765,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
               <button className="page-tab" type="button" onClick={() => setActivePageId(page.id)}>
                 <LayoutGrid size={15} />
                 <span>{page.name}</span>
-                <small>{pageServiceCount(page.id)}</small>
+                <small>{pageItemCount(page.id)}</small>
               </button>
               {manageMode && (
                 <button className="page-edit" type="button" aria-label={`Edit ${page.name} page`} title={`Edit ${page.name} page`} onClick={() => setEditingPage(page)}>
@@ -1693,8 +1780,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
       <section className="toolbar" aria-label="Dashboard tools">
         <Search size={18} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${activePage?.name ?? "services"}`} aria-label="Search services" />
-        <span className="service-count">{filtered.length} service{filtered.length === 1 ? "" : "s"}</span>
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${activePage?.name ?? "dashboard"}`} aria-label="Search dashboard" />
+        <span className="service-count">{visibleItemCount} item{visibleItemCount === 1 ? "" : "s"}</span>
         <button className="refresh-button" type="button" disabled={statusLoading || insightLoading} onClick={() => void refreshTelemetry()} title="Refresh service status">
           <RefreshCw className={statusLoading || insightLoading ? "spin" : ""} size={16} />
           <span>Refresh</span>
@@ -1710,16 +1797,18 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
       {error && <div className="notice">{error}</div>}
 
-      {!loading && filtered.length === 0 && !error && (
+      {!loading && visibleItemCount === 0 && !error && (
         <section className="empty-state">
           <div className="empty-icon"><LayoutGrid size={28} /></div>
-          <h2>{services.length === 0 ? "Build your dashboard" : query.trim() ? "No matching services" : `${activePage?.name ?? "This page"} is empty`}</h2>
-          <p>{services.length === 0 ? "Add your first self-hosted service, server tool, or generic link." : query.trim() ? "Try a different search or add another service." : "Add services here or move an existing card to this page from its edit screen."}</p>
-          {!query.trim() && <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add service</button>}
+          <h2>{services.length === 0 && widgets.length === 0 ? "Build your dashboard" : query.trim() ? "No matching items" : `${activePage?.name ?? "This page"} is empty`}</h2>
+          <p>{services.length === 0 && widgets.length === 0 ? "Add a self-hosted service or your first dashboard widget." : query.trim() ? "Try a different search or add another item." : "Add services or widgets here, or move an existing item from its edit screen."}</p>
+          {!query.trim() && <div className="empty-actions"><button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add service</button><button className="secondary" type="button" onClick={() => setEditingWidget(null)}><Plus size={18} /> Add widget</button></div>}
         </section>
       )}
 
-      {groups.map(([category, categoryServices]) => {
+      {groups.map(([category, categoryItems]) => {
+        const categoryServices = categoryItems.services;
+        const categoryWidgets = categoryItems.widgets;
         const layout = pageCategories.find((item) => item.name.toLowerCase() === category.toLowerCase());
         const collapsed = !query.trim() && (layout?.collapsed ?? false);
         return (
@@ -1749,7 +1838,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
               {manageMode && <span className="category-drag-handle" title="Drag category to reorder"><GripVertical size={15} /></span>}
               <Server size={18} />
               <h2>{category}</h2>
-              <span className="category-count">{categoryServices.length}</span>
+              <span className="category-count">{categoryServices.length + categoryWidgets.length}</span>
               <button className="collapse-button" type="button" onClick={() => void toggleCategory(category)} aria-label={`${collapsed ? "Expand" : "Collapse"} ${category}`} title={collapsed ? "Expand category" : "Collapse category"}>
                 {collapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
               </button>
@@ -1817,6 +1906,19 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                     </article>
                   );
                 })}
+                {categoryWidgets.map((widget) => <WidgetCard
+                  key={`widget-${widget.id}`}
+                  widget={widget}
+                  manageMode={manageMode}
+                  summary={widgetSummary}
+                  dragOver={dragOverWidgetId === widget.id}
+                  onEdit={(item) => setEditingWidget(item)}
+                  onDragStart={(event) => { if (!manageMode || query.trim()) { event.preventDefault(); return; } event.stopPropagation(); setDraggingWidget({ id: widget.id, page_id: widget.page_id, category: widget.category }); setDraggingCategory(null); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", `widget:${widget.id}`); }}
+                  onDragOver={(event) => { if (draggingWidget?.page_id === widget.page_id && draggingWidget.category === widget.category && draggingWidget.id !== widget.id && !query.trim()) { event.preventDefault(); event.stopPropagation(); setDragOverWidgetId(widget.id); } }}
+                  onDragLeave={() => dragOverWidgetId === widget.id && setDragOverWidgetId(null)}
+                  onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void dropWidget(widget); }}
+                  onDragEnd={() => { setDraggingWidget(null); setDragOverWidgetId(null); }}
+                />)}
               </div>
             )}
           </section>
@@ -1824,6 +1926,24 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       })}
 
       <footer className="app-footer">Homelab Dashboard v{APP_VERSION}</footer>
+
+      {settingsOpen && (
+        <SettingsModal
+          settings={dashboardSettings}
+          extensions={extensions}
+          currentTheme={BUILTIN_THEME_BY_ID[appearance.theme_id]?.name ?? appearance.custom_themes.find((theme) => theme.id === appearance.theme_id)?.name ?? appearance.theme_id}
+          importedThemeCount={appearance.custom_themes.length}
+          connections={connections}
+          widgetCount={widgets.length}
+          appVersion={APP_VERSION}
+          onClose={() => setSettingsOpen(false)}
+          onSave={saveSettings}
+          onOpenAppearance={() => { setAppearanceError(""); setAppearanceOpen(true); }}
+          onOpenConnections={() => { setConnectionsOpen(true); void loadConnections(); }}
+          onAddWidget={() => setEditingWidget(null)}
+          onRemoveTheme={async (themeId) => { await deleteTheme(themeId); await loadExtensions(); }}
+        />
+      )}
 
       {updatesOpen && (
         <UpdateManagerModal
@@ -1854,6 +1974,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
         />
       )}
 
+      {editingWidget !== undefined && <WidgetModal widget={editingWidget} pages={pages} defaultPageId={activePageId} csrfToken={auth.csrf_token} api={api} onClose={() => setEditingWidget(undefined)} onChanged={async () => { await loadWidgets(); await loadStructure(); }} />}
+
       {catalogOpen && <ServiceCatalogModal onClose={() => setCatalogOpen(false)} onSelect={chooseTemplate} />}
 
       {editing !== undefined && (
@@ -1874,7 +1996,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       {editingPage !== undefined && (
         <PageModal
           page={editingPage}
-          serviceCount={editingPage ? pageServiceCount(editingPage.id) : 0}
+          itemCount={editingPage ? pageItemCount(editingPage.id) : 0}
           csrfToken={auth.csrf_token}
           onClose={() => setEditingPage(undefined)}
           onSaved={(saved) => {
