@@ -15,7 +15,7 @@ Imported themes are treated as untrusted data. The supported theme package forma
 
 ## Built-in widgets
 
-v0.13 widgets are validated data records rather than executable plugins. Bookmark widgets accept only `http://` and `https://` destinations and are rendered with external-link protections. Notes and widget configuration do not receive Docker, filesystem, network, or stored-credential privileges beyond the fixed capabilities implemented by the dashboard itself.
+v0.14 widgets are validated data records rather than executable plugins. Bookmark widgets accept only `http://` and `https://` destinations and are rendered with external-link protections. Notes and widget configuration do not receive Docker, filesystem, network, or stored-credential privileges beyond the fixed capabilities implemented by the dashboard itself.
 
 ## Integration secrets
 
@@ -24,6 +24,6 @@ Stored service API keys and qBittorrent WebUI credentials are encrypted using th
 
 ## Update Manager / Docker agent
 
-v0.13 keeps Docker write privileges out of the main dashboard container. The optional update-agent does mount the Docker socket and should therefore be treated as a privileged host-management component. Its HTTP API is placed only on an internal Compose network, can require a shared token, accepts provider-specific resource identifiers rather than shell commands, and only exposes Compose projects whose working/config paths resolve inside the configured `UPDATE_AGENT_STACKS_ROOT`. Mount that stacks root read-only and never publish the agent port to the LAN or Internet.
+v0.14 keeps Docker write privileges out of the main dashboard container. The optional update-agent does mount the Docker socket and should therefore be treated as a privileged host-management component. Its HTTP API is placed only on an internal Compose network, can require a shared token, accepts provider-specific resource identifiers rather than shell commands, and only exposes Compose projects whose working/config paths resolve inside the configured `UPDATE_AGENT_STACKS_ROOT`. Mount that stacks root read-only and never publish the agent port to the LAN or Internet.
 
 TrueNAS updates are sent to TrueNAS itself through its authenticated JSON-RPC WebSocket API. Use HTTPS/WSS and a dedicated user-linked API key with only the roles needed for app discovery/upgrades.

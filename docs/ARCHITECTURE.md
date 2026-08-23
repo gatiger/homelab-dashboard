@@ -55,15 +55,15 @@ The update-agent is a privileged component because Docker socket access is effec
 
 ## Settings and widget model
 
-Dashboard-wide preferences are persisted in the existing `app_settings` store and exposed through authenticated Settings endpoints. v0.13 uses these preferences for the dashboard title/greeting, browser telemetry refresh cadence, cached update-state refresh cadence, active-job refresh cadence, and the server-side update-discovery interval. Browser refresh timing and update discovery remain intentionally separate so the UI can feel live without repeatedly querying registries or platform APIs.
+Dashboard-wide preferences are persisted in the existing `app_settings` store and exposed through authenticated Settings endpoints. v0.14 uses these preferences for the dashboard title/greeting, browser telemetry refresh cadence, cached update-state refresh cadence, active-job refresh cadence, and the server-side update-discovery interval. Browser refresh timing and update discovery remain intentionally separate so the UI can feel live without repeatedly querying registries or platform APIs.
 
-Built-in dashboard widgets are stored in `dashboard_widgets`. A widget has a type, title, page/category placement, card size, sort order, enabled state, and validated JSON configuration. v0.13 ships clock, note, bookmarks, and system-summary widgets. Widget configuration is data-only; the current Extension Manager does not execute third-party JavaScript, Python, CSS, or other arbitrary plugin code.
+Built-in dashboard widgets are stored in `dashboard_widgets`. A widget has a type, title, page/category placement, card size, sort order, enabled state, and validated JSON configuration. v0.14 ships clock, note, bookmarks, system-summary, service-status, and update-overview widgets. Widget configuration is data-only; the current Extension Manager does not execute third-party JavaScript, Python, CSS, or other arbitrary plugin code.
 
 ## Layout model
 
-Dashboard structure is persisted server-side rather than only in browser local storage. `dashboard_pages` stores page/tab names and order. Every service has a `page_id`, while `category_layouts` stores category order and collapsed state separately for each page. Service `sort_order` controls card order within a page/category, `favorite` pins a card ahead of unpinned cards in that category, and `card_size` is one of `compact`, `standard`, or `wide`.
+Dashboard structure is persisted server-side rather than only in browser local storage. `dashboard_pages` stores page/tab names and order. Every service and widget has a `page_id`, while `category_layouts` stores category order, collapsed state, and optional header icon separately for each page. Services and widgets share the same numeric sort space inside a category through the mixed dashboard-item reorder endpoint. `favorite` keeps service cards in a pinned group ahead of the normal mixed service/widget group, and `card_size` is one of `compact`, `standard`, or `wide`.
 
-The browser only keeps the most recently selected page ID as a convenience; the actual page/category/card structure remains portable across browsers and devices because it lives in SQLite.
+The browser only keeps the most recently selected page ID as a convenience; the actual page/category/card structure remains portable across browsers and devices because it lives in SQLite. v0.14 also exposes a credential-free layout export/import format for sharing structure between installations; full backups still use `/app/data`.
 
 
 ## Distribution model

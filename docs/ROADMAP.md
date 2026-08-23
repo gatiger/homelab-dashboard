@@ -141,15 +141,17 @@ Additional management providers are tracked separately below rather than making 
 - Widget-aware category counts/order and page-deletion safeguards
 - Extension Manager inventory for bundled modules and imported data-only themes
 
-## Milestone 14 — Advanced dashboard builder 🚧
+## Milestone 14 — Advanced dashboard builder ✅ / 🚧
 
-- Custom theme editor
-- Unified drag/reorder behavior for service and widget cards
-- Desktop and mobile layout refinements
-- Import/export of dashboard structure
-- Category naming/icon customization
-- Dashboard cloning/templates
-- Additional built-in widget types
+- Custom visual theme editor ✅
+- Unified drag/reorder behavior for unpinned service and widget cards ✅
+- Desktop and mobile layout refinements ✅
+- Import/export of dashboard structure with secrets excluded ✅
+- Category naming/icon customization ✅
+- Dashboard page cloning ✅
+- Reusable distributable page-template packs 🚧
+- Additional built-in widget types ✅
+- Compact responsive command bar / header cleanup ✅
 
 ## Milestone 15 — Open extension platform 🚧
 

@@ -4,6 +4,28 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.14.0] - 2026-08-23
+
+### Added
+- Compact responsive command bar with persistent Updates/Manage controls plus consolidated Add and account/settings menus.
+- Unified mixed ordering for unpinned service cards and widgets within each category.
+- Category rename and icon customization in Manage mode.
+- Page cloning.
+- Safe dashboard layout export/import from Settings → Dashboard.
+- Visual custom-theme editor that creates the same validated data-only packages used by imported themes.
+- Service Status and Update Overview built-in widgets.
+
+### Changed
+- Dashboard cards use deterministic 12-column desktop/tablet/mobile spans for more predictable layouts.
+- Favorite services remain pinned, while the normal unpinned layout group can freely mix services and widgets.
+- Service creation/moves and widget moves now choose sort positions across both service and widget records to avoid mixed-layout collisions.
+- Settings now includes a Dashboard section for portable layout tools.
+
+### Security
+- Layout exports intentionally exclude API keys, passwords, encrypted secrets, management-controller credentials, and active management links.
+- Imported layouts restore service management as unconfigured rather than silently reconnecting privileged controllers.
+- Visual theme editing remains data-only and cannot inject CSS, JavaScript, Python, or shell commands.
+
 ## [0.13.1] - 2026-08-23
 
 ### Fixed

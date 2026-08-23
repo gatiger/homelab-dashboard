@@ -1,6 +1,6 @@
 # Update Manager
 
-Homelab Dashboard v0.13 continues to separate **application integrations** from **management providers**. A service such as Sonarr can use the Sonarr API for health/queue information while Docker Compose, Dockge, or TrueNAS independently controls how that instance is updated.
+Homelab Dashboard v0.14 continues to separate **application integrations** from **management providers**. A service such as Sonarr can use the Sonarr API for health/queue information while Docker Compose, Dockge, or TrueNAS independently controls how that instance is updated.
 
 ## User experience
 
@@ -53,7 +53,7 @@ Docker socket access is still powerful. Treat the update-agent as a privileged h
 
 ### Update discovery and mutable tags
 
-The first Docker provider uses `docker pull` during an update check. Pulling an image does **not** restart the running container. Homelab Dashboard compares the running container image ID with the newly pulled local image ID; when they differ, the card is marked **Update available**. This does not depend on a particular registry API. v0.13 targets public container registries; dedicated private-registry credential support is planned for a later provider enhancement.
+The first Docker provider uses `docker pull` during an update check. Pulling an image does **not** restart the running container. Homelab Dashboard compares the running container image ID with the newly pulled local image ID; when they differ, the card is marked **Update available**. This does not depend on a particular registry API. v0.14 targets public container registries; dedicated private-registry credential support is planned for a later provider enhancement.
 
 ## TrueNAS Apps provider
 

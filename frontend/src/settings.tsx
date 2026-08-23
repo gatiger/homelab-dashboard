@@ -1,5 +1,5 @@
 import React, { FormEvent, useEffect, useState } from "react";
-import { Cable, Gauge, Info, Monitor, Palette, Puzzle, Save, Settings, X } from "lucide-react";
+import { Cable, Download, Gauge, Info, LayoutGrid, Monitor, Palette, Puzzle, Save, Settings, Upload, X } from "lucide-react";
 
 export type DashboardSettings = {
   dashboard_title: string;
@@ -23,10 +23,11 @@ export type ExtensionDescriptor = {
 };
 
 type ConnectionSummary = { id: number; name: string; type: string; used_by: number };
-type Tab = "general" | "appearance" | "connections" | "monitoring" | "extensions" | "about";
+type Tab = "general" | "dashboard" | "appearance" | "connections" | "monitoring" | "extensions" | "about";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "general", label: "General", icon: <Settings size={16} /> },
+  { id: "dashboard", label: "Dashboard", icon: <LayoutGrid size={16} /> },
   { id: "appearance", label: "Appearance", icon: <Palette size={16} /> },
   { id: "connections", label: "Connections", icon: <Cable size={16} /> },
   { id: "monitoring", label: "Monitoring", icon: <Gauge size={16} /> },
@@ -47,6 +48,8 @@ export function SettingsModal({
   onOpenAppearance,
   onOpenConnections,
   onAddWidget,
+  onExportDashboard,
+  onImportDashboard,
   onRemoveTheme,
 }: {
   settings: DashboardSettings;
@@ -61,6 +64,8 @@ export function SettingsModal({
   onOpenAppearance: () => void;
   onOpenConnections: () => void;
   onAddWidget: () => void;
+  onExportDashboard: () => void;
+  onImportDashboard: () => void;
   onRemoveTheme: (themeId: string) => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>("general");
@@ -104,13 +109,15 @@ export function SettingsModal({
               <div className="settings-save"><button className="primary" type="submit" disabled={busy}><Save size={16} /> {busy ? "Saving…" : "Save settings"}</button></div>
             </form>}
 
-            {tab === "appearance" && <div className="settings-panel"><div className="settings-heading"><Palette size={19} /><div><h3>Appearance</h3><p>Theme selection and community theme packages.</p></div></div><div className="settings-summary-row"><span>Current theme</span><strong>{currentTheme}</strong></div><div className="settings-summary-row"><span>Imported themes</span><strong>{importedThemeCount}</strong></div><button className="primary" type="button" onClick={() => openSub(onOpenAppearance)}>Manage appearance</button></div>}
+            {tab === "dashboard" && <div className="settings-panel"><div className="settings-heading"><LayoutGrid size={19} /><div><h3>Dashboard builder</h3><p>Move your layout between installations or keep a reusable structure file. Exported layout files intentionally exclude passwords, API keys, and controller credentials.</p></div></div><div className="builder-action-grid"><button className="secondary" type="button" onClick={onExportDashboard}><Download size={16} /> Export layout</button><button className="secondary" type="button" onClick={onImportDashboard}><Upload size={16} /> Import layout</button></div><div className="settings-callout"><strong>Safe layout export</strong><span>Pages, categories, service card definitions, and widgets are included. Secrets and management links are not.</span></div></div>}
+
+            {tab === "appearance" && <div className="settings-panel"><div className="settings-heading"><Palette size={19} /><div><h3>Appearance</h3><p>Theme selection, visual theme editing, and community theme packages.</p></div></div><div className="settings-summary-row"><span>Current theme</span><strong>{currentTheme}</strong></div><div className="settings-summary-row"><span>Imported themes</span><strong>{importedThemeCount}</strong></div><button className="primary" type="button" onClick={() => openSub(onOpenAppearance)}>Manage appearance</button></div>}
 
             {tab === "connections" && <div className="settings-panel"><div className="settings-heading"><Cable size={19} /><div><h3>Connections</h3><p>Reusable controller credentials for TrueNAS and future management providers.</p></div></div>{connections.length ? <div className="settings-list">{connections.map((item) => <div key={item.id}><span><strong>{item.name}</strong><small>{item.type} · used by {item.used_by}</small></span></div>)}</div> : <div className="settings-empty">No management connections configured.</div>}<button className="primary" type="button" onClick={() => openSub(onOpenConnections)}>Manage connections</button></div>}
 
             {tab === "extensions" && <div className="settings-panel"><div className="settings-heading"><Puzzle size={19} /><div><h3>Extension Manager</h3><p>Installed built-in modules and safe data-only extensions. Arbitrary executable plugins are not enabled yet.</p></div></div><div className="extension-list">{extensions.map((extension) => <div className="extension-row" key={extension.id}><div className="extension-mark"><Puzzle size={17} /></div><span><strong>{extension.name}</strong><small>{extension.description}</small><em>{extension.author} · v{extension.version} · {extension.source === "built_in" ? "Built in" : "Imported"}{extension.active && extension.type === "theme" ? " · Active" : ""}</em></span>{extension.removable && <button className="danger-button compact-button" type="button" onClick={() => void onRemoveTheme(extension.id.replace(/^theme\./, ""))}>Remove</button>}</div>)}</div></div>}
 
-            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.13 adds the Settings hub and first built-in widget runtime. The open executable plugin SDK remains a later milestone.</small></div></div>}
+            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.14 adds the advanced builder, compact command bar, unified card ordering, layout import/export, and visual theme editing. The open executable plugin SDK remains a later milestone.</small></div></div>}
           </div>
         </div>
       </section>

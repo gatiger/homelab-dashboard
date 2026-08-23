@@ -1,7 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
-import { Bookmark, Clock, FileText, Gauge, GripVertical, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ArrowUpCircle, Bookmark, CheckCircle2, Clock, FileText, Gauge, GripVertical, Pencil, Server, Plus, Trash2, X } from "lucide-react";
 
-export type DashboardWidgetType = "clock" | "note" | "bookmarks" | "system_summary";
+export type DashboardWidgetType = "clock" | "note" | "bookmarks" | "system_summary" | "service_status" | "update_overview";
 
 export type DashboardWidget = {
   id: number;
@@ -25,6 +25,8 @@ export type WidgetSummary = {
   offlineServices: number;
   updatesAvailable: number;
   connections: number;
+  services: { id: number; name: string; state: string; latency?: number | null }[];
+  updates: { id: number; name: string; state: string; current?: string | null; latest?: string | null }[];
 };
 
 type WidgetForm = Omit<DashboardWidget, "id" | "created_at" | "updated_at">;
@@ -47,12 +49,16 @@ export const WIDGET_TYPES: { type: DashboardWidgetType; name: string; descriptio
   { type: "note", name: "Note", description: "A persistent text note for reminders, status messages, or instructions." },
   { type: "bookmarks", name: "Bookmarks", description: "A compact set of quick links that opens in new tabs." },
   { type: "system_summary", name: "Dashboard summary", description: "Online/offline service counts, pending updates, and configured connections." },
+  { type: "service_status", name: "Service status", description: "A live compact list of service health and latency." },
+  { type: "update_overview", name: "Update overview", description: "Services with pending updates, plus optional current services." },
 ];
 
 function iconFor(type: DashboardWidgetType, size = 22) {
   if (type === "clock") return <Clock size={size} />;
   if (type === "note") return <FileText size={size} />;
   if (type === "bookmarks") return <Bookmark size={size} />;
+  if (type === "service_status") return <Server size={size} />;
+  if (type === "update_overview") return <ArrowUpCircle size={size} />;
   return <Gauge size={size} />;
 }
 
@@ -60,6 +66,8 @@ function defaultConfig(type: DashboardWidgetType): Record<string, unknown> {
   if (type === "clock") return { format: "12", show_seconds: false, show_date: true, timezone: "local" };
   if (type === "note") return { text: "" };
   if (type === "bookmarks") return { items: [] };
+  if (type === "service_status") return { limit: 6, show_latency: true };
+  if (type === "update_overview") return { limit: 6, show_current: false };
   return { show_services: true, show_updates: true, show_connections: true };
 }
 
@@ -176,6 +184,16 @@ export function WidgetModal({
             <label className="check-row"><input type="checkbox" checked={Boolean(form.config.show_connections ?? true)} onChange={(event) => setForm((current) => ({ ...current, config: { ...current.config, show_connections: event.target.checked } }))} /><span>Show management connections</span></label>
           </div>}
 
+          {form.type === "service_status" && <>
+            <label><span>Maximum services</span><select value={Number(form.config.limit ?? 6)} onChange={(event) => setForm((current) => ({ ...current, config: { ...current.config, limit: Number(event.target.value) } }))}>{[3,4,6,8,10,12].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+            <label className="check-row"><input type="checkbox" checked={Boolean(form.config.show_latency ?? true)} onChange={(event) => setForm((current) => ({ ...current, config: { ...current.config, show_latency: event.target.checked } }))} /><span>Show response latency</span></label>
+          </>}
+
+          {form.type === "update_overview" && <>
+            <label><span>Maximum services</span><select value={Number(form.config.limit ?? 6)} onChange={(event) => setForm((current) => ({ ...current, config: { ...current.config, limit: Number(event.target.value) } }))}>{[3,4,6,8,10,12].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+            <label className="check-row"><input type="checkbox" checked={Boolean(form.config.show_current ?? false)} onChange={(event) => setForm((current) => ({ ...current, config: { ...current.config, show_current: event.target.checked } }))} /><span>Also show up-to-date services</span></label>
+          </>}
+
           {error && <div className="notice compact span-2">{error}</div>}
           <div className="modal-actions span-2">
             {widget && <button className="danger-button" type="button" disabled={busy} onClick={() => void remove()}><Trash2 size={16} /> Delete widget</button>}
@@ -241,6 +259,8 @@ export function WidgetCard({ widget, manageMode, summary, dragOver = false, onEd
             {Boolean(widget.config.show_updates ?? true) && <div><span>Updates</span><strong className={summary.updatesAvailable ? "summary-attention" : "summary-good"}>{summary.updatesAvailable}</strong></div>}
             {Boolean(widget.config.show_connections ?? true) && <div><span>Connections</span><strong>{summary.connections}</strong></div>}
           </div>}
+          {widget.type === "service_status" && <div className="status-list-widget">{summary.services.slice(0, Number(widget.config.limit ?? 6)).map((service) => <div key={service.id}><span className={`mini-status-dot mini-${service.state}`} /><strong>{service.name}</strong><small>{service.state === "online" ? (Boolean(widget.config.show_latency ?? true) && service.latency ? `${service.latency} ms` : "Online") : service.state}</small></div>)}{summary.services.length === 0 && <span className="widget-muted">No services configured.</span>}</div>}
+          {widget.type === "update_overview" && <div className="status-list-widget">{summary.updates.filter((item) => item.state === "available" || Boolean(widget.config.show_current ?? false) && item.state === "current").slice(0, Number(widget.config.limit ?? 6)).map((item) => <div key={item.id}><span className={`mini-status-dot ${item.state === "available" ? "mini-available" : "mini-online"}`} />{item.state === "available" ? <ArrowUpCircle size={13} /> : <CheckCircle2 size={13} />}<strong>{item.name}</strong><small>{item.state === "available" ? (item.latest && item.latest !== item.current ? `${item.current ?? "?"} → ${item.latest}` : "Update available") : "Up to date"}</small></div>)}{summary.updates.filter((item) => item.state === "available").length === 0 && !Boolean(widget.config.show_current ?? false) && <span className="widget-muted">Everything managed is up to date.</span>}</div>}
         </div>
       </div>
       {manageMode && <div className="card-controls"><span className="drag-handle" title="Drag to reorder" aria-hidden="true"><GripVertical size={15} /></span><button className="edit-button" type="button" onClick={() => onEdit(widget)} title={`Edit ${widget.title}`} aria-label={`Edit ${widget.title}`}><Pencil size={15} /></button></div>}

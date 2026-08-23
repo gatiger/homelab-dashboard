@@ -98,6 +98,7 @@ type CategoryLayout = {
   name: string;
   sort_order: number;
   collapsed: boolean;
+  icon?: string | null;
 };
 
 type AppearanceSettings = {
@@ -195,7 +196,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.13.1";
+const APP_VERSION = "0.14.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -875,6 +876,21 @@ function PageModal({
     }
   }
 
+  async function clonePage() {
+    if (!page) return;
+    const cloneName = window.prompt("Name for the cloned page", `${page.name} Copy`)?.trim();
+    if (!cloneName) return;
+    setBusy(true);
+    setError("");
+    try {
+      const cloned = await api<DashboardPage>(`/api/pages/${page.id}/clone`, { method: "POST", body: JSON.stringify({ name: cloneName }) }, csrfToken);
+      onSaved(cloned);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to clone page.");
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
       <section className="modal page-modal" role="dialog" aria-modal="true" aria-labelledby="page-modal-title">
@@ -895,6 +911,7 @@ function PageModal({
           {page && !page.is_default && itemCount > 0 && <small>Move or remove the {itemCount} item{itemCount === 1 ? "" : "s"} on this page before deleting it.</small>}
           {error && <div className="notice compact">{error}</div>}
           <div className="modal-actions">
+            {page && <button className="secondary" disabled={busy} type="button" onClick={() => void clonePage()}><LayoutGrid size={16} /> Clone page</button>}
             {page && !page.is_default && (
               <button className="danger-button" disabled={busy || itemCount > 0} type="button" onClick={() => void remove()}>
                 <Trash2 size={16} /> Delete page
@@ -908,6 +925,55 @@ function PageModal({
       </section>
     </div>
   );
+}
+
+const CATEGORY_ICON_OPTIONS = [
+  { id: "server", label: "Server" },
+  { id: "grid", label: "Grid" },
+  { id: "link", label: "Links" },
+  { id: "star", label: "Favorites" },
+  { id: "settings", label: "Settings" },
+  { id: "cable", label: "Network" },
+  { id: "updates", label: "Updates" },
+  { id: "palette", label: "Custom" },
+];
+
+function CategoryIcon({ icon, size = 18 }: { icon?: string | null; size?: number }) {
+  if (icon === "grid") return <LayoutGrid size={size} />;
+  if (icon === "link") return <LinkIcon size={size} />;
+  if (icon === "star") return <Star size={size} />;
+  if (icon === "settings") return <Settings size={size} />;
+  if (icon === "cable") return <Cable size={size} />;
+  if (icon === "updates") return <ArrowUpCircle size={size} />;
+  if (icon === "palette") return <Palette size={size} />;
+  return <Server size={size} />;
+}
+
+function CategoryEditModal({ category, csrfToken, onClose, onSaved }: { category: CategoryLayout; csrfToken?: string | null; onClose: () => void; onSaved: () => Promise<void> | void }) {
+  const [name, setName] = useState(category.name);
+  const [icon, setIcon] = useState(category.icon ?? "server");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function save(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      await api<CategoryLayout>("/api/categories/configure", { method: "PUT", body: JSON.stringify({ page_id: category.page_id, old_name: category.name, name, icon }) }, csrfToken);
+      await onSaved(); onClose();
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to update category."); }
+    finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
+    <section className="modal category-modal" role="dialog" aria-modal="true" aria-labelledby="category-modal-title">
+      <header className="modal-header"><div><p className="eyebrow">CATEGORY</p><h2 id="category-modal-title">Customize {category.name}</h2><p className="modal-subhead">Rename the category across this page and choose a consistent header icon.</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
+      <form className="page-form" onSubmit={save}>
+        <label><span>Category name</span><input value={name} maxLength={80} required onChange={(event) => setName(event.target.value)} /></label>
+        <label><span>Header icon</span><select value={icon} onChange={(event) => setIcon(event.target.value)}>{CATEGORY_ICON_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <div className="category-icon-preview"><CategoryIcon icon={icon} size={20} /><span>{name || category.name}</span></div>
+        {error && <div className="notice compact">{error}</div>}
+        <div className="modal-actions"><div className="action-spacer" /><button className="secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save category"}</button></div>
+      </form>
+    </section>
+  </div>;
 }
 
 function AppearanceModal({
@@ -928,6 +994,19 @@ function AppearanceModal({
   onDelete: (themeId: string) => Promise<void>;
 }) {
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [themeDraft, setThemeDraft] = useState<ThemePackage>(() => ({ ...THEME_TEMPLATE, colors: { ...THEME_TEMPLATE.colors } }));
+
+  function beginThemeEditor() {
+    const base = resolveTheme(appearance.theme_id, appearance.custom_themes);
+    setThemeDraft({ ...THEME_TEMPLATE, id: `custom-${Date.now().toString(36)}`, name: "Custom Theme", author: "Dashboard Admin", mode: base.mode, colors: { ...base.colors } });
+    setEditorOpen(true);
+  }
+
+  async function saveThemeDraft(event: FormEvent) {
+    event.preventDefault();
+    await onImport(themeDraft);
+  }
 
   async function importFile(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -973,6 +1052,7 @@ function AppearanceModal({
         </header>
 
         <div className="appearance-tools">
+          <button className="primary" type="button" disabled={busy} onClick={beginThemeEditor}><Palette size={16} /> Create custom theme</button>
           <button className="secondary" type="button" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={16} /> Import theme</button>
           <button className="secondary" type="button" onClick={downloadTemplate}><Download size={16} /> Theme template</button>
           <input ref={fileInput} className="hidden-file" type="file" accept="application/json,.json" onChange={(event) => void importFile(event)} />
@@ -980,6 +1060,18 @@ function AppearanceModal({
         </div>
 
         {error && <div className="notice appearance-error">{error}</div>}
+
+        {editorOpen && <form className="theme-editor" onSubmit={(event) => void saveThemeDraft(event)}>
+          <div className="theme-editor-heading"><div><strong>Visual theme editor</strong><span>Start from the active theme, then adjust any design token. The saved result is the same safe data-only format as an imported community theme.</span></div><button className="icon-button" type="button" onClick={() => setEditorOpen(false)} aria-label="Close theme editor"><X size={17} /></button></div>
+          <div className="theme-editor-meta">
+            <label><span>Name</span><input required maxLength={80} value={themeDraft.name} onChange={(event) => setThemeDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label><span>Theme ID</span><input required maxLength={40} pattern="[a-z0-9][a-z0-9-]+" value={themeDraft.id} onChange={(event) => setThemeDraft((current) => ({ ...current, id: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-") }))} /></label>
+            <label><span>Mode</span><select value={themeDraft.mode} onChange={(event) => setThemeDraft((current) => ({ ...current, mode: event.target.value as "dark" | "light" }))}><option value="dark">Dark</option><option value="light">Light</option></select></label>
+            <label><span>Author</span><input required maxLength={100} value={themeDraft.author} onChange={(event) => setThemeDraft((current) => ({ ...current, author: event.target.value }))} /></label>
+          </div>
+          <div className="theme-token-grid">{(Object.keys(themeDraft.colors) as (keyof ThemePackage["colors"])[]).map((key) => <label key={key}><span>{key.replace(/([A-Z])/g, " $1")}</span><div><input type="color" value={themeDraft.colors[key]} onChange={(event) => setThemeDraft((current) => ({ ...current, colors: { ...current.colors, [key]: event.target.value } }))} /><input value={themeDraft.colors[key]} pattern="#[0-9a-fA-F]{6}" onChange={(event) => setThemeDraft((current) => ({ ...current, colors: { ...current.colors, [key]: event.target.value } }))} /></div></label>)}</div>
+          <div className="modal-actions"><div className="action-spacer" /><button className="secondary" type="button" onClick={() => setEditorOpen(false)}>Cancel</button><button className="primary" type="submit" disabled={busy}>Save custom theme</button></div>
+        </form>}
 
         <div className="theme-grid">
           <article className={`theme-card ${appearance.theme_id === "system" ? "selected" : ""}`}>
@@ -1245,10 +1337,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [statusLoading, setStatusLoading] = useState(false);
   const [insights, setInsights] = useState<Record<number, ServiceInsight>>({});
   const [insightLoading, setInsightLoading] = useState(false);
-  const [dragging, setDragging] = useState<{ id: number; page_id: number; category: string; favorite: boolean } | null>(null);
-  const [dragOverId, setDragOverId] = useState<number | null>(null);
-  const [draggingWidget, setDraggingWidget] = useState<{ id: number; page_id: number; category: string } | null>(null);
-  const [dragOverWidgetId, setDragOverWidgetId] = useState<number | null>(null);
+  const [draggingItem, setDraggingItem] = useState<{ kind: "service" | "widget"; id: number; page_id: number; category: string; favorite: boolean } | null>(null);
+  const [dragOverItemKey, setDragOverItemKey] = useState<string | null>(null);
   const [draggingCategory, setDraggingCategory] = useState<string | null>(null);
   const [dragOverCategory, setDragOverCategory] = useState<string | null>(null);
   const [draggingPageId, setDraggingPageId] = useState<number | null>(null);
@@ -1267,6 +1357,11 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [updateStates, setUpdateStates] = useState<Record<number, ServiceUpdateState>>({});
   const [updateJobs, setUpdateJobs] = useState<UpdateJob[]>([]);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<CategoryLayout | null>(null);
+  const commandBarRef = useRef<HTMLDivElement | null>(null);
+  const layoutImportRef = useRef<HTMLInputElement | null>(null);
 
   async function loadServices() {
     setLoading(true);
@@ -1435,6 +1530,16 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   useEffect(() => { document.title = dashboardSettings.dashboard_title; }, [dashboardSettings.dashboard_title]);
 
   useEffect(() => {
+    function closeMenus(event: MouseEvent) {
+      if (commandBarRef.current && !commandBarRef.current.contains(event.target as Node)) { setAddMenuOpen(false); setAccountMenuOpen(false); }
+    }
+    function onKey(event: KeyboardEvent) { if (event.key === "Escape") { setAddMenuOpen(false); setAccountMenuOpen(false); } }
+    document.addEventListener("mousedown", closeMenus);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", closeMenus); document.removeEventListener("keydown", onKey); };
+  }, []);
+
+  useEffect(() => {
     const applySelected = () => applyTheme(resolveTheme(appearance.theme_id, appearance.custom_themes), appearance.theme_id);
     applySelected();
     window.localStorage.setItem("homelab-dashboard-appearance", JSON.stringify(appearance));
@@ -1492,26 +1597,20 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       ...services.filter((service) => service.page_id === activePageId).map((service) => service.category),
       ...widgets.filter((widget) => widget.page_id === activePageId).map((widget) => widget.category),
     ])).filter((name) => !known.has(name.toLowerCase())).sort((a, b) => a.localeCompare(b));
-    return [...layouts, ...extras.map((name, index) => ({ page_id: activePageId, name, sort_order: 100000 + index, collapsed: false }))];
+    return [...layouts, ...extras.map((name, index) => ({ page_id: activePageId, name, sort_order: 100000 + index, collapsed: false, icon: null }))];
   }, [categories, services, widgets, activePageId]);
 
   const groups = useMemo(() => {
-    const serviceGrouped = filtered.reduce<Record<string, Service[]>>((acc, service) => {
-      (acc[service.category] ??= []).push(service);
-      return acc;
-    }, {});
-    for (const categoryServices of Object.values(serviceGrouped)) {
-      categoryServices.sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.sort_order - b.sort_order || a.name.localeCompare(b.name));
-    }
-    const widgetGrouped = filteredWidgets.reduce<Record<string, DashboardWidget[]>>((acc, widget) => {
-      (acc[widget.category] ??= []).push(widget);
-      return acc;
-    }, {});
-    for (const categoryWidgets of Object.values(widgetGrouped)) categoryWidgets.sort((a, b) => a.sort_order - b.sort_order || a.title.localeCompare(b.title));
-    const names = Array.from(new Set([...Object.keys(serviceGrouped), ...Object.keys(widgetGrouped)]));
+    type MixedItem =
+      | { kind: "service"; id: number; sort_order: number; favorite: boolean; name: string; service: Service }
+      | { kind: "widget"; id: number; sort_order: number; favorite: false; name: string; widget: DashboardWidget };
+    const grouped: Record<string, MixedItem[]> = {};
+    filtered.forEach((service) => (grouped[service.category] ??= []).push({ kind: "service", id: service.id, sort_order: service.sort_order, favorite: service.favorite, name: service.name, service }));
+    filteredWidgets.forEach((widget) => (grouped[widget.category] ??= []).push({ kind: "widget", id: widget.id, sort_order: widget.sort_order, favorite: false, name: widget.title, widget }));
+    Object.values(grouped).forEach((items) => items.sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.sort_order - b.sort_order || a.name.localeCompare(b.name)));
     const order = new Map(pageCategories.map((category, index) => [category.name.toLowerCase(), index]));
-    return names.sort((a, b) => (order.get(a.toLowerCase()) ?? 999999) - (order.get(b.toLowerCase()) ?? 999999) || a.localeCompare(b))
-      .map((name) => [name, { services: serviceGrouped[name] ?? [], widgets: widgetGrouped[name] ?? [] }] as const);
+    return Object.keys(grouped).sort((a, b) => (order.get(a.toLowerCase()) ?? 999999) - (order.get(b.toLowerCase()) ?? 999999) || a.localeCompare(b))
+      .map((name) => [name, grouped[name]] as const);
   }, [filtered, filteredWidgets, pageCategories]);
 
   async function toggleFavorite(service: Service) {
@@ -1529,54 +1628,33 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     }
   }
 
-  async function dropService(target: Service) {
-    const source = dragging;
-    setDragging(null);
-    setDragOverId(null);
-    if (!source || source.id === target.id || source.page_id !== target.page_id || source.category !== target.category || source.favorite !== target.favorite || query.trim()) return;
-    const categoryItems = services
-      .filter((item) => item.page_id === target.page_id && item.category === target.category)
-      .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.sort_order - b.sort_order || a.name.localeCompare(b.name));
-    const from = categoryItems.findIndex((item) => item.id === source.id);
-    const to = categoryItems.findIndex((item) => item.id === target.id);
-    if (from < 0 || to < 0) return;
-    const reordered = [...categoryItems];
-    const [moved] = reordered.splice(from, 1);
-    reordered.splice(to, 0, moved);
-    const orderMap = new Map(reordered.map((item, index) => [item.id, index + 1]));
-    setServices((current) => current.map((item) => item.page_id === target.page_id && item.category === target.category ? { ...item, sort_order: orderMap.get(item.id) ?? item.sort_order } : item));
-    try {
-      await api<Service[]>("/api/services/reorder", {
-        method: "POST",
-        body: JSON.stringify({ page_id: target.page_id, category: target.category, ordered_ids: reordered.map((item) => item.id) }),
-      }, auth.csrf_token);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to save card order.");
-      void loadServices();
-    }
-  }
+  async function dropDashboardItem(target: { kind: "service" | "widget"; id: number; page_id: number; category: string; favorite: boolean }) {
+    const source = draggingItem;
+    setDraggingItem(null);
+    setDragOverItemKey(null);
+    if (!source || source.kind === target.kind && source.id === target.id || source.page_id !== target.page_id || source.category !== target.category || source.favorite !== target.favorite || query.trim()) return;
 
-  async function dropWidget(target: DashboardWidget) {
-    const source = draggingWidget;
-    setDraggingWidget(null);
-    setDragOverWidgetId(null);
-    if (!source || source.id === target.id || source.page_id !== target.page_id || source.category !== target.category || query.trim()) return;
-    const categoryItems = widgets.filter((item) => item.page_id === target.page_id && item.category === target.category).sort((a, b) => a.sort_order - b.sort_order || a.title.localeCompare(b.title));
-    const from = categoryItems.findIndex((item) => item.id === source.id);
-    const to = categoryItems.findIndex((item) => item.id === target.id);
+    const mixed = [
+      ...services.filter((item) => item.page_id === target.page_id && item.category === target.category).map((item) => ({ kind: "service" as const, id: item.id, sort_order: item.sort_order, favorite: item.favorite, name: item.name })),
+      ...widgets.filter((item) => item.page_id === target.page_id && item.category === target.category).map((item) => ({ kind: "widget" as const, id: item.id, sort_order: item.sort_order, favorite: false, name: item.title })),
+    ].sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+
+    const from = mixed.findIndex((item) => item.kind === source.kind && item.id === source.id);
+    const to = mixed.findIndex((item) => item.kind === target.kind && item.id === target.id);
     if (from < 0 || to < 0) return;
-    const reordered = [...categoryItems];
+    const reordered = [...mixed];
     const [moved] = reordered.splice(from, 1);
     reordered.splice(to, 0, moved);
-    const orderMap = new Map(reordered.map((item, index) => [item.id, index + 1]));
-    setWidgets((current) => current.map((item) => item.page_id === target.page_id && item.category === target.category ? { ...item, sort_order: orderMap.get(item.id) ?? item.sort_order } : item));
+    const serviceOrder = new Map<number, number>();
+    const widgetOrder = new Map<number, number>();
+    reordered.forEach((item, index) => item.kind === "service" ? serviceOrder.set(item.id, index + 1) : widgetOrder.set(item.id, index + 1));
+    setServices((current) => current.map((item) => serviceOrder.has(item.id) ? { ...item, sort_order: serviceOrder.get(item.id)! } : item));
+    setWidgets((current) => current.map((item) => widgetOrder.has(item.id) ? { ...item, sort_order: widgetOrder.get(item.id)! } : item));
     try {
-      const updated = await api<DashboardWidget[]>("/api/widgets/reorder", { method: "POST", body: JSON.stringify({ page_id: target.page_id, category: target.category, ordered_ids: reordered.map((item) => item.id) }) }, auth.csrf_token);
-      const updatedById = new Map(updated.map((item) => [item.id, item]));
-      setWidgets((current) => current.map((item) => updatedById.get(item.id) ?? item));
+      await api<{ ok: boolean }>("/api/dashboard-items/reorder", { method: "POST", body: JSON.stringify({ page_id: target.page_id, category: target.category, ordered_items: reordered.map((item) => ({ kind: item.kind, id: item.id })) }) }, auth.csrf_token);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to save widget order.");
-      void loadWidgets();
+      setError(err instanceof Error ? err.message : "Unable to save dashboard item order.");
+      void Promise.all([loadServices(), loadWidgets()]);
     }
   }
 
@@ -1660,6 +1738,31 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setCatalogOpen(true);
   }
 
+  async function exportDashboardLayout() {
+    setError("");
+    try {
+      const layout = await api<Record<string, unknown>>("/api/dashboard/export");
+      const blob = new Blob([JSON.stringify(layout, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `homelab-dashboard-layout-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to export dashboard layout."); }
+  }
+
+  async function importDashboardLayoutFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]; event.target.value = "";
+    if (!file) return;
+    try {
+      const layout = JSON.parse(await file.text()) as Record<string, unknown>;
+      if (!window.confirm("Import this dashboard layout? Imported pages are added alongside your current pages. Passwords and API keys are never imported.")) return;
+      await api<DashboardPage[]>("/api/dashboard/import", { method: "POST", body: JSON.stringify(layout) }, auth.csrf_token);
+      await Promise.all([loadServices(), loadWidgets(), loadStructure()]);
+      setSettingsOpen(false);
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to import dashboard layout."); }
+  }
+
   function chooseTemplate(entry: CatalogEntry) {
     setCatalogOpen(false);
     setSelectedTemplate(entry);
@@ -1713,12 +1816,15 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
   const pageItemCount = (pageId: number) => services.filter((service) => service.page_id === pageId).length + widgets.filter((widget) => widget.page_id === pageId).length;
   const visibleItemCount = filtered.length + filteredWidgets.length;
+  const availableUpdateCount = Object.values(updateStates).filter((item) => item.state === "available").length;
   const widgetSummary = {
     totalServices: services.filter((service) => service.enabled).length,
     onlineServices: Object.values(statuses).filter((item) => item.state === "online").length,
     offlineServices: Object.values(statuses).filter((item) => item.state === "offline").length,
-    updatesAvailable: Object.values(updateStates).filter((item) => item.state === "available").length,
+    updatesAvailable: availableUpdateCount,
     connections: connections.length,
+    services: services.filter((service) => service.enabled).map((service) => ({ id: service.id, name: service.name, state: statuses[service.id]?.state ?? (service.status_check ? "unknown" : "unchecked"), latency: statuses[service.id]?.latency_ms ?? null })),
+    updates: services.filter((service) => service.management_provider !== "none").map((service) => ({ id: service.id, name: service.name, state: updateStates[service.id]?.state ?? "unknown", current: updateStates[service.id]?.current_version ?? null, latest: updateStates[service.id]?.latest_version ?? null })),
   };
 
   return (
@@ -1729,13 +1835,30 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           <h1>{dashboardSettings.show_greeting ? `${greeting}, ${auth.username}.` : dashboardSettings.dashboard_title}</h1>
           <p className="subhead">{activePage ? `${activePage.name} · your services and tools in one place.` : "Your services and tools in one place."}</p>
         </div>
-        <div className="hero-actions">
-          <button className="secondary updates-button" type="button" onClick={() => { setUpdatesOpen(true); void loadUpdateData(); }}><ArrowUpCircle size={17} /> Updates{Object.values(updateStates).filter((item) => item.state === "available").length > 0 && <span className="update-badge">{Object.values(updateStates).filter((item) => item.state === "available").length}</span>}</button>
-          <button className="secondary" type="button" onClick={() => { setSettingsOpen(true); void loadExtensions(); }}><Settings size={17} /> Settings</button>
-          <button className={`secondary ${manageMode ? "active" : ""}`} type="button" onClick={() => setManageMode((value) => !value)}><LayoutGrid size={17} /> {manageMode ? "Done" : "Manage"}</button>
-          <button className="secondary" type="button" onClick={onLogout}><LogOut size={17} /> Sign out</button>
-          <button className="secondary" type="button" onClick={() => setEditingWidget(null)}><Plus size={18} /> Add widget</button>
-          <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add service</button>
+        <div className="command-bar" ref={commandBarRef}>
+          <button className={`command-button updates-command ${availableUpdateCount ? "has-attention" : ""}`} type="button" title={availableUpdateCount ? `${availableUpdateCount} update${availableUpdateCount === 1 ? "" : "s"} available` : "Updates"} onClick={() => { setAddMenuOpen(false); setAccountMenuOpen(false); setUpdatesOpen(true); void loadUpdateData(); }}>
+            <ArrowUpCircle size={17} /><span className="command-label">Updates</span>{availableUpdateCount > 0 && <span className="command-badge">{availableUpdateCount}</span>}
+          </button>
+          <button className={`command-button ${manageMode ? "active" : ""}`} type="button" title={manageMode ? "Finish arranging dashboard" : "Manage dashboard"} onClick={() => { setAddMenuOpen(false); setAccountMenuOpen(false); setManageMode((value) => !value); }}><LayoutGrid size={17} /><span className="command-label">{manageMode ? "Done" : "Manage"}</span></button>
+          <div className="command-menu-wrap">
+            <button className={`command-button add-command ${addMenuOpen ? "active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={addMenuOpen} onClick={() => { setAddMenuOpen((value) => !value); setAccountMenuOpen(false); }}><Plus size={18} /><span className="command-label">Add</span><ChevronDown className="command-chevron" size={14} /></button>
+            {addMenuOpen && <div className="command-menu" role="menu">
+              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); beginAdd(); }}><Plus size={16} /><span><strong>Add service</strong><small>Link or integrated application</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); setEditingWidget(null); }}><LayoutGrid size={16} /><span><strong>Add widget</strong><small>Clock, notes, status and more</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); setEditingPage(null); }}><Plus size={16} /><span><strong>Add page</strong><small>Create another dashboard page</small></span></button>
+            </div>}
+          </div>
+          <div className="command-menu-wrap">
+            <button className={`command-button account-command ${accountMenuOpen ? "active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={accountMenuOpen} title="Dashboard menu" onClick={() => { setAccountMenuOpen((value) => !value); setAddMenuOpen(false); }}><Settings size={17} /><span className="command-label">Menu</span><ChevronDown className="command-chevron" size={14} /></button>
+            {accountMenuOpen && <div className="command-menu command-menu-right" role="menu">
+              <div className="command-menu-user"><strong>{auth.username}</strong><small>Administrator</small></div>
+              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); void loadExtensions(); }}><Settings size={16} /><span><strong>Settings</strong><small>Dashboard, monitoring and extensions</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setConnectionsOpen(true); void loadConnections(); }}><Cable size={16} /><span><strong>Connections</strong><small>TrueNAS and future controllers</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={16} /><span><strong>Appearance</strong><small>Themes and visual editor</small></span></button>
+              <div className="command-menu-separator" />
+              <button className="command-menu-danger" type="button" role="menuitem" onClick={onLogout}><LogOut size={16} /><span><strong>Sign out</strong></span></button>
+            </div>}
+          </div>
         </div>
       </header>
 
@@ -1807,8 +1930,6 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       )}
 
       {groups.map(([category, categoryItems]) => {
-        const categoryServices = categoryItems.services;
-        const categoryWidgets = categoryItems.widgets;
         const layout = pageCategories.find((item) => item.name.toLowerCase() === category.toLowerCase());
         const collapsed = !query.trim() && (layout?.collapsed ?? false);
         return (
@@ -1836,44 +1957,61 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
               onDragEnd={() => { setDraggingCategory(null); setDragOverCategory(null); }}
             >
               {manageMode && <span className="category-drag-handle" title="Drag category to reorder"><GripVertical size={15} /></span>}
-              <Server size={18} />
+              <CategoryIcon icon={layout?.icon} size={18} />
               <h2>{category}</h2>
-              <span className="category-count">{categoryServices.length + categoryWidgets.length}</span>
+              <span className="category-count">{categoryItems.length}</span>
+              {manageMode && layout && <button className="category-edit-button" type="button" onClick={() => setEditingCategory(layout)} aria-label={`Customize ${category}`} title="Rename category or change icon"><Pencil size={14} /></button>}
               <button className="collapse-button" type="button" onClick={() => void toggleCategory(category)} aria-label={`${collapsed ? "Expand" : "Collapse"} ${category}`} title={collapsed ? "Expand category" : "Collapse category"}>
                 {collapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
               </button>
             </div>
             {!collapsed && (
               <div className="grid">
-                {categoryServices.map((service) => {
+                {categoryItems.map((dashboardItem) => {
+                  if (dashboardItem.kind === "widget") {
+                    const widget = dashboardItem.widget;
+                    const key = `widget:${widget.id}`;
+                    return <WidgetCard
+                      key={key}
+                      widget={widget}
+                      manageMode={manageMode}
+                      summary={widgetSummary}
+                      dragOver={dragOverItemKey === key}
+                      onEdit={(item) => setEditingWidget(item)}
+                      onDragStart={(event) => { if (!manageMode || query.trim()) { event.preventDefault(); return; } event.stopPropagation(); setDraggingItem({ kind: "widget", id: widget.id, page_id: widget.page_id, category: widget.category, favorite: false }); setDraggingCategory(null); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", key); }}
+                      onDragOver={(event) => { if (draggingItem?.page_id === widget.page_id && draggingItem.category === widget.category && !draggingItem.favorite && !(draggingItem.kind === "widget" && draggingItem.id === widget.id) && !query.trim()) { event.preventDefault(); event.stopPropagation(); setDragOverItemKey(key); } }}
+                      onDragLeave={() => dragOverItemKey === key && setDragOverItemKey(null)}
+                      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void dropDashboardItem({ kind: "widget", id: widget.id, page_id: widget.page_id, category: widget.category, favorite: false }); }}
+                      onDragEnd={() => { setDraggingItem(null); setDragOverItemKey(null); }}
+                    />;
+                  }
+                  const service = dashboardItem.service;
+                  const key = `service:${service.id}`;
                   const serviceStatus = statusPresentation(service);
                   const insight = insights[service.id];
                   const updateState = updateStates[service.id];
                   const updateJob = updateJobs.find((job) => (job.service_id === service.id || job.active_service_id === service.id) && (job.state === "queued" || job.state === "running"));
                   return (
                     <article
-                      className={`card card-${service.card_size} ${manageMode ? "managing-card" : ""} ${service.favorite ? "favorite-card" : ""} ${!service.enabled ? "disabled-card" : ""} ${serviceStatus.state === "offline" ? "offline-card" : ""} ${dragOverId === service.id ? "drag-over" : ""}`}
-                      key={service.id}
+                      className={`card card-${service.card_size} ${manageMode ? "managing-card" : ""} ${service.favorite ? "favorite-card" : ""} ${!service.enabled ? "disabled-card" : ""} ${serviceStatus.state === "offline" ? "offline-card" : ""} ${dragOverItemKey === key ? "drag-over" : ""}`}
+                      key={key}
                       draggable={manageMode && !query.trim()}
                       onDragStart={(event) => {
                         if (!manageMode || query.trim()) { event.preventDefault(); return; }
                         event.stopPropagation();
-                        setDragging({ id: service.id, page_id: service.page_id, category: service.category, favorite: service.favorite });
+                        setDraggingItem({ kind: "service", id: service.id, page_id: service.page_id, category: service.category, favorite: service.favorite });
                         setDraggingCategory(null);
                         event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", String(service.id));
+                        event.dataTransfer.setData("text/plain", key);
                       }}
                       onDragOver={(event) => {
-                        if (dragging?.page_id === service.page_id && dragging.category === service.category && dragging.favorite === service.favorite && dragging.id !== service.id && !query.trim()) {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          event.dataTransfer.dropEffect = "move";
-                          setDragOverId(service.id);
+                        if (draggingItem?.page_id === service.page_id && draggingItem.category === service.category && draggingItem.favorite === service.favorite && !(draggingItem.kind === "service" && draggingItem.id === service.id) && !query.trim()) {
+                          event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; setDragOverItemKey(key);
                         }
                       }}
-                      onDragLeave={() => dragOverId === service.id && setDragOverId(null)}
-                      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void dropService(service); }}
-                      onDragEnd={() => { setDragging(null); setDragOverId(null); }}
+                      onDragLeave={() => dragOverItemKey === key && setDragOverItemKey(null)}
+                      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void dropDashboardItem({ kind: "service", id: service.id, page_id: service.page_id, category: service.category, favorite: service.favorite }); }}
+                      onDragEnd={() => { setDraggingItem(null); setDragOverItemKey(null); }}
                     >
                       <a className="card-link" href={service.url} target="_blank" rel="noreferrer" aria-label={`Open ${service.name}`} onClick={(event) => { if (manageMode) event.preventDefault(); }}>
                         <div className="icon" aria-hidden="true"><ServiceIcon service={service} /></div>
@@ -1894,7 +2032,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                       <CardManagementStatus service={service} state={updateState} job={updateJob} manageMode={manageMode} onUpdate={(item) => void startManagedUpdate(item)} />
                       {manageMode && (
                         <div className="card-controls">
-                          <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : "Drag to reorder"} aria-hidden="true"><GripVertical size={15} /></span>
+                          <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : service.favorite ? "Pinned cards reorder with other pinned cards" : "Drag to reorder with services and widgets"} aria-hidden="true"><GripVertical size={15} /></span>
                           <button className={`favorite-button ${service.favorite ? "active" : ""}`} type="button" onClick={() => void toggleFavorite(service)} aria-label={`${service.favorite ? "Unpin" : "Pin"} ${service.name}`} title={service.favorite ? "Unpin favorite" : "Pin favorite"}>
                             <Star size={15} fill={service.favorite ? "currentColor" : "none"} />
                           </button>
@@ -1906,24 +2044,13 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                     </article>
                   );
                 })}
-                {categoryWidgets.map((widget) => <WidgetCard
-                  key={`widget-${widget.id}`}
-                  widget={widget}
-                  manageMode={manageMode}
-                  summary={widgetSummary}
-                  dragOver={dragOverWidgetId === widget.id}
-                  onEdit={(item) => setEditingWidget(item)}
-                  onDragStart={(event) => { if (!manageMode || query.trim()) { event.preventDefault(); return; } event.stopPropagation(); setDraggingWidget({ id: widget.id, page_id: widget.page_id, category: widget.category }); setDraggingCategory(null); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", `widget:${widget.id}`); }}
-                  onDragOver={(event) => { if (draggingWidget?.page_id === widget.page_id && draggingWidget.category === widget.category && draggingWidget.id !== widget.id && !query.trim()) { event.preventDefault(); event.stopPropagation(); setDragOverWidgetId(widget.id); } }}
-                  onDragLeave={() => dragOverWidgetId === widget.id && setDragOverWidgetId(null)}
-                  onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void dropWidget(widget); }}
-                  onDragEnd={() => { setDraggingWidget(null); setDragOverWidgetId(null); }}
-                />)}
               </div>
             )}
           </section>
         );
       })}
+
+      <input ref={layoutImportRef} className="hidden-file" type="file" accept="application/json,.json" onChange={(event) => void importDashboardLayoutFile(event)} />
 
       <footer className="app-footer">Homelab Dashboard v{APP_VERSION}</footer>
 
@@ -1941,6 +2068,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           onOpenAppearance={() => { setAppearanceError(""); setAppearanceOpen(true); }}
           onOpenConnections={() => { setConnectionsOpen(true); void loadConnections(); }}
           onAddWidget={() => setEditingWidget(null)}
+          onExportDashboard={() => void exportDashboardLayout()}
+          onImportDashboard={() => layoutImportRef.current?.click()}
           onRemoveTheme={async (themeId) => { await deleteTheme(themeId); await loadExtensions(); }}
         />
       )}
@@ -1973,6 +2102,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           onDelete={deleteTheme}
         />
       )}
+
+      {editingCategory && <CategoryEditModal category={editingCategory} csrfToken={auth.csrf_token} onClose={() => setEditingCategory(null)} onSaved={async () => { await Promise.all([loadServices(), loadWidgets(), loadStructure()]); }} />}
 
       {editingWidget !== undefined && <WidgetModal widget={editingWidget} pages={pages} defaultPageId={activePageId} csrfToken={auth.csrf_token} api={api} onClose={() => setEditingWidget(undefined)} onChanged={async () => { await loadWidgets(); await loadStructure(); }} />}
 

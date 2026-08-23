@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.13.1
+ghcr.io/gatiger/homelab-dashboard:0.14.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -67,9 +67,9 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Searchable service catalog with common self-hosted applications
 - Recognizable bundled service logos with generic/custom fallbacks
 - Live Online / Degraded / Offline monitoring and response latency
-- Favorites, Compact/Standard/Wide cards, and drag-and-drop card ordering
+- Favorites, Compact/Standard/Wide cards, and unified drag-and-drop ordering for service and widget cards
 - Multiple dashboard pages/tabs with persistent page assignment and ordering
-- Persisted category ordering and collapsible category sections
+- Persisted category ordering, collapsible sections, category renaming, and customizable category icons
 - Optional Jellyfin server/session integration
 - Sonarr/Radarr queue, health, progress, and upcoming activity
 - Prowlarr indexer/health insight
@@ -87,10 +87,12 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Automatic in-browser telemetry/update-state refresh without manually reloading the page
 - Central Settings hub for General, Appearance, Connections, Monitoring, Extensions, and About
 - Configurable browser telemetry/update refresh intervals and scheduled update-discovery interval
-- Built-in Clock/Date, Note, Bookmarks, and Dashboard Summary widgets
+- Built-in Clock/Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets
 - Widgets can be assigned to any page/category and use Compact/Standard/Wide card sizes
-- Extension Manager inventory for built-in modules and imported data-only theme packages
+- Compact responsive command bar plus Extension Manager inventory for built-in modules and imported data-only theme packages
 - Sequential Update All, health verification, update history, and Docker rollback on failed health checks
+- Dashboard layout export/import with secrets deliberately excluded
+- Page cloning and a visual custom-theme editor
 
 
 ## Update Manager
@@ -107,11 +109,11 @@ The update agent is not required for normal dashboard use. See [Update Manager](
 
 ## Settings, themes, widgets, and extensions
 
-Open **Settings** for General, Appearance, Connections, Monitoring, Extensions, and About. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
+Open **Settings** for General, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
 
-The first built-in widget pack includes Clock & Date, Note, Bookmarks, and Dashboard Summary widgets. Widgets are stored in SQLite and can be assigned to any dashboard page/category with Compact, Standard, or Wide sizing. See [Widgets](docs/configuration/widgets.md) and [Settings](docs/configuration/settings.md).
+The built-in widget pack includes Clock & Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets. Widgets are stored in SQLite and can be assigned to any dashboard page/category with Compact, Standard, or Wide sizing. See [Widgets](docs/configuration/widgets.md) and [Settings](docs/configuration/settings.md). See [Advanced dashboard builder](docs/configuration/dashboard-builder.md) for mixed ordering, category customization, page cloning, layout import/export, and the compact command bar.
 
-Community themes can be imported as validated JSON packages. Theme extensions contain approved color tokens only and cannot execute CSS/JavaScript or access network services, Docker, files, or stored credentials. The v0.13 Extension Manager shows installed built-in modules and imported theme packages; arbitrary executable community plugins remain a later milestone. See [Theme extensions](docs/extensions/themes.md) and the broader [extension architecture](docs/extensions/architecture.md).
+Community themes can be imported as validated JSON packages. Theme extensions contain approved color tokens only and cannot execute CSS/JavaScript or access network services, Docker, files, or stored credentials. The Extension Manager shows installed built-in modules and imported theme packages; arbitrary executable community plugins remain a later milestone. See [Theme extensions](docs/extensions/themes.md) and the broader [extension architecture](docs/extensions/architecture.md).
 
 ## Service catalog
 
@@ -184,7 +186,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Project status / roadmap
 
-v0.13 adds the central Settings hub, configurable refresh/update-discovery intervals, the first built-in widget runtime, and an Extension Manager inventory. Advanced dashboard import/export, page templates, deeper widget layout controls, SSO options, additional management providers, and the permission-aware executable plugin SDK remain explicitly tracked as future work.
+v0.14 adds the advanced builder: compact command menus, unified service/widget ordering, deterministic responsive card widths, category customization, page cloning, safe layout import/export, visual theme creation, and two additional live widgets. Reusable page-template packs, SSO options, additional management providers, and the permission-aware executable plugin SDK remain explicitly tracked as future work.
 
 See [CHANGELOG.md](CHANGELOG.md), [ROADMAP](docs/ROADMAP.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -1,6 +1,6 @@
 # Settings
 
-v0.13 introduces a central **Settings** hub so configuration does not keep expanding across the dashboard header.
+The central **Settings** hub keeps configuration from expanding across the dashboard header. v0.14 also moves portable dashboard-builder actions into their own Dashboard section.
 
 ## General
 
@@ -12,13 +12,22 @@ General settings currently include:
 
 Settings are stored in the same persistent SQLite database as services and pages.
 
+## Dashboard
+
+Dashboard settings provide:
+
+- **Export layout** — downloads a portable JSON structure containing pages, categories, public service-card configuration, and widgets.
+- **Import layout** — adds pages from a compatible layout file alongside the current dashboard.
+
+Layout files intentionally exclude API keys, passwords, encrypted secrets, controller credentials, and active management links. Use `/app/data` backup/restore for full disaster recovery.
+
 ## Appearance
 
-The Appearance section links to the existing theme manager. Built-in and imported themes continue to use the validated design-token model introduced in v0.9.
+Appearance links to the theme manager. In addition to built-in/imported themes, v0.14 adds a visual custom-theme editor that starts from the active theme and edits the same validated design tokens used by community theme packages.
 
 ## Connections
 
-The Connections section links to reusable management connections such as TrueNAS. Connections remain independent from visible service cards.
+Connections links to reusable management connections such as TrueNAS. Connections remain independent from visible service cards.
 
 ## Monitoring
 
@@ -33,10 +42,10 @@ The browser refresh intervals do not themselves pull Docker images or repeatedly
 
 ## Extensions
 
-The v0.13 Extension Manager is deliberately conservative. It inventories:
+The Extension Manager remains deliberately conservative. It inventories:
 
 - Built-in core modules.
 - The built-in widget pack.
 - Imported data-only themes.
 
-Imported themes can be removed from the manager. v0.13 does **not** execute arbitrary community plugin code. The permission-aware executable extension runtime remains a later milestone.
+Imported themes can be removed from the manager. v0.14 does **not** execute arbitrary community plugin code. The permission-aware executable extension runtime remains a later milestone.

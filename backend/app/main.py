@@ -44,7 +44,7 @@ UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 36
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.13.1")
+app = FastAPI(title=f"{APP_NAME} API", version="0.14.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -248,11 +248,51 @@ class PageReorder(BaseModel):
     ordered_ids: list[int] = Field(min_length=1, max_length=50)
 
 
+class PageCloneRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+    @field_validator("name")
+    @classmethod
+    def trim_clone_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Page name cannot be blank")
+        return value
+
+
 class CategoryLayout(BaseModel):
     page_id: int
     name: str
     sort_order: int
     collapsed: bool
+    icon: str | None = None
+
+
+class CategoryUpdate(BaseModel):
+    page_id: int = Field(ge=1)
+    old_name: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=80)
+    icon: str | None = Field(default=None, max_length=32)
+
+    @field_validator("old_name", "name")
+    @classmethod
+    def trim_category_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Category name cannot be blank")
+        return value
+
+    @field_validator("icon")
+    @classmethod
+    def normalize_category_icon(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        if not value:
+            return None
+        if not re.fullmatch(r"[a-z0-9-]{1,32}", value):
+            raise ValueError("Category icon must use letters, numbers, or hyphens")
+        return value
 
 
 class CategoryStateUpdate(BaseModel):
@@ -394,7 +434,7 @@ class DashboardSettings(BaseModel):
         return value
 
 
-WidgetType = Literal["clock", "note", "bookmarks", "system_summary"]
+WidgetType = Literal["clock", "note", "bookmarks", "system_summary", "service_status", "update_overview"]
 
 
 class DashboardWidgetBase(BaseModel):
@@ -439,6 +479,17 @@ class WidgetReorder(BaseModel):
     page_id: int = Field(default=1, ge=1)
     category: str = Field(min_length=1, max_length=80)
     ordered_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class DashboardItemRef(BaseModel):
+    kind: Literal["service", "widget"]
+    id: int = Field(ge=1)
+
+
+class DashboardItemReorder(BaseModel):
+    page_id: int = Field(default=1, ge=1)
+    category: str = Field(min_length=1, max_length=80)
+    ordered_items: list[DashboardItemRef] = Field(min_length=1, max_length=1000)
 
 
 class ExtensionDescriptor(BaseModel):
@@ -531,6 +582,10 @@ def normalize_widget_config(widget_type: WidgetType, config: dict[str, object]) 
                 if label and parsed.scheme in {"http", "https"} and parsed.netloc:
                     clean_items.append({"label": label, "url": url})
         return {"items": clean_items}
+    if widget_type == "service_status":
+        return {"limit": max(3, min(int(config.get("limit", 6) or 6), 12)), "show_latency": bool(config.get("show_latency", True))}
+    if widget_type == "update_overview":
+        return {"limit": max(3, min(int(config.get("limit", 6) or 6), 12)), "show_current": bool(config.get("show_current", False))}
     return {
         "show_services": bool(config.get("show_services", True)),
         "show_updates": bool(config.get("show_updates", True)),
@@ -845,6 +900,7 @@ def init_db() -> None:
                 name TEXT NOT NULL COLLATE NOCASE,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 collapsed INTEGER NOT NULL DEFAULT 0,
+                icon TEXT,
                 PRIMARY KEY (page_id, name),
                 FOREIGN KEY(page_id) REFERENCES dashboard_pages(id) ON DELETE CASCADE
             );
@@ -944,6 +1000,9 @@ def init_db() -> None:
             """
         )
         ensure_service_migrations(connection)
+        category_columns = {row["name"] for row in connection.execute("PRAGMA table_info(category_layouts)").fetchall()}
+        if "icon" not in category_columns:
+            connection.execute("ALTER TABLE category_layouts ADD COLUMN icon TEXT")
         migrate_legacy_truenas_connections(connection)
         ensure_default_page(connection)
         connection.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme_id', 'system')")
@@ -1153,11 +1212,13 @@ def row_to_page(row: sqlite3.Row) -> DashboardPage:
 
 
 def row_to_category(row: sqlite3.Row) -> CategoryLayout:
+    keys = set(row.keys())
     return CategoryLayout(
         page_id=int(row["page_id"]),
         name=row["name"],
         sort_order=int(row["sort_order"] or 0),
         collapsed=bool(row["collapsed"]),
+        icon=row["icon"] if "icon" in keys else None,
     )
 
 
@@ -1196,7 +1257,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.13.1", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.14.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -1263,7 +1324,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.13.1", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": "HomelabDashboard/0.14.0", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -2530,7 +2591,7 @@ def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[Inte
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.13.1", "time": iso_now()}
+    return {"status": "ok", "version": "0.14.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -2696,15 +2757,19 @@ def create_widget(payload: DashboardWidgetCreate, _: SessionUser = Depends(requi
 @app.put("/api/widgets/{widget_id}", response_model=DashboardWidget)
 def update_widget(widget_id: int, payload: DashboardWidgetUpdate, _: SessionUser = Depends(require_write_auth)) -> DashboardWidget:
     with db() as connection:
-        if not connection.execute("SELECT 1 FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone():
+        current = connection.execute("SELECT page_id, category, sort_order FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone()
+        if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Widget not found")
         require_page(connection, payload.page_id)
         ensure_category_layout(connection, payload.page_id, payload.category)
         config = normalize_widget_config(payload.type, payload.config)
+        sort_order = payload.sort_order
+        if payload.page_id != current["page_id"] or payload.category.casefold() != str(current["category"]).casefold():
+            sort_order = int(connection.execute("""SELECT COALESCE(MAX(sort_order), 0) + 1 FROM (SELECT sort_order FROM services WHERE page_id = ? AND category = ? COLLATE NOCASE UNION ALL SELECT sort_order FROM dashboard_widgets WHERE page_id = ? AND category = ? COLLATE NOCASE)""", (payload.page_id, payload.category, payload.page_id, payload.category)).fetchone()[0])
         connection.execute(
             """UPDATE dashboard_widgets SET type = ?, title = ?, page_id = ?, category = ?, card_size = ?,
                sort_order = ?, enabled = ?, config_json = ?, updated_at = ? WHERE id = ?""",
-            (payload.type, payload.title, payload.page_id, payload.category, payload.card_size, payload.sort_order, int(payload.enabled), json.dumps(config, separators=(",", ":")), iso_now(), widget_id),
+            (payload.type, payload.title, payload.page_id, payload.category, payload.card_size, sort_order, int(payload.enabled), json.dumps(config, separators=(",", ":")), iso_now(), widget_id),
         )
         row = connection.execute("SELECT * FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone()
     return row_to_widget(row)
@@ -2756,9 +2821,9 @@ def delete_widget(widget_id: int, _: SessionUser = Depends(require_write_auth)) 
 @app.get("/api/extensions", response_model=list[ExtensionDescriptor])
 def list_extensions(_: SessionUser = Depends(require_auth)) -> list[ExtensionDescriptor]:
     built_in = [
-        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.13.1", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.13.1", author="Homelab Dashboard", description="Clock, note, bookmarks, and system-summary dashboard widgets.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.13.1", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.14.0", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.14.0", author="Homelab Dashboard", description="Clock, note, bookmarks, dashboard-summary, service-status, and update-overview widgets.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.14.0", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
     ]
     with db() as connection:
         selected = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()
@@ -2771,6 +2836,81 @@ def list_extensions(_: SessionUser = Depends(require_auth)) -> list[ExtensionDes
         ) for theme in themes
     ]
     return built_in + imported
+
+
+@app.get("/api/dashboard/export")
+def export_dashboard_structure(_: SessionUser = Depends(require_auth)) -> dict[str, object]:
+    with db() as connection:
+        page_rows = connection.execute("SELECT * FROM dashboard_pages ORDER BY sort_order, id").fetchall()
+        exported_pages: list[dict[str, object]] = []
+        for page in page_rows:
+            categories = [dict(name=row["name"], sort_order=row["sort_order"], collapsed=bool(row["collapsed"]), icon=row["icon"] if "icon" in row.keys() else None) for row in connection.execute("SELECT * FROM category_layouts WHERE page_id = ? ORDER BY sort_order, name COLLATE NOCASE", (page["id"],)).fetchall()]
+            services_out = []
+            for row in connection.execute("SELECT * FROM services WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page["id"],)).fetchall():
+                services_out.append({"name": row["name"], "type": row["type"], "url": row["url"], "category": row["category"], "icon": row["icon"], "enabled": bool(row["enabled"]), "status_check": bool(row["status_check"]), "favorite": bool(row["favorite"]), "card_size": row["card_size"], "sort_order": row["sort_order"]})
+            widgets_out = []
+            for row in connection.execute("SELECT * FROM dashboard_widgets WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page["id"],)).fetchall():
+                try: config = json.loads(row["config_json"] or "{}")
+                except json.JSONDecodeError: config = {}
+                widgets_out.append({"type": row["type"], "title": row["title"], "category": row["category"], "card_size": row["card_size"], "sort_order": row["sort_order"], "enabled": bool(row["enabled"]), "config": config})
+            exported_pages.append({"name": page["name"], "is_default": bool(page["is_default"]), "categories": categories, "services": services_out, "widgets": widgets_out})
+    return {"format": "homelab-dashboard-layout", "schema_version": 1, "exported_at": iso_now(), "contains_secrets": False, "pages": exported_pages}
+
+
+@app.post("/api/dashboard/import", response_model=list[DashboardPage])
+def import_dashboard_structure(payload: dict[str, object], _: SessionUser = Depends(require_write_auth)) -> list[DashboardPage]:
+    if payload.get("format") != "homelab-dashboard-layout" or payload.get("schema_version") != 1 or not isinstance(payload.get("pages"), list):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported dashboard layout file")
+    now = iso_now()
+    with db() as connection:
+        for raw_page in payload["pages"][:50]:
+            if not isinstance(raw_page, dict):
+                continue
+            base_name = str(raw_page.get("name", "Imported page")).strip()[:60] or "Imported page"
+            name = base_name
+            suffix = 2
+            while connection.execute("SELECT 1 FROM dashboard_pages WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+                tail = f" {suffix}"
+                name = f"{base_name[:60-len(tail)]}{tail}"
+                suffix += 1
+            page_order = int(connection.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM dashboard_pages").fetchone()[0])
+            cursor = connection.execute("INSERT INTO dashboard_pages (name, sort_order, is_default, created_at, updated_at) VALUES (?, ?, 0, ?, ?)", (name, page_order, now, now))
+            page_id = int(cursor.lastrowid)
+            raw_categories = raw_page.get("categories", [])
+            if isinstance(raw_categories, list):
+                for index, raw_cat in enumerate(raw_categories[:100], start=1):
+                    if not isinstance(raw_cat, dict): continue
+                    cat_name = str(raw_cat.get("name", "General")).strip()[:80] or "General"
+                    icon = str(raw_cat.get("icon") or "").strip().lower()[:32] or None
+                    if icon and not re.fullmatch(r"[a-z0-9-]{1,32}", icon): icon = None
+                    connection.execute("INSERT OR IGNORE INTO category_layouts (page_id, name, sort_order, collapsed, icon) VALUES (?, ?, ?, ?, ?)", (page_id, cat_name, int(raw_cat.get("sort_order") or index), int(bool(raw_cat.get("collapsed", False))), icon))
+            raw_services = raw_page.get("services", [])
+            if isinstance(raw_services, list):
+                for index, raw in enumerate(raw_services[:1000], start=1):
+                    if not isinstance(raw, dict): continue
+                    name_value = str(raw.get("name", "Service")).strip()[:80] or "Service"
+                    type_value = str(raw.get("type", "link")).strip().lower()[:80] or "link"
+                    if not re.fullmatch(r"[a-z0-9._-]+", type_value):
+                        type_value = "link"
+                    url_value = str(raw.get("url", "https://")).strip()[:1000]
+                    parsed = urlparse(url_value)
+                    if parsed.scheme not in {"http", "https"}: continue
+                    category = str(raw.get("category", "General")).strip()[:80] or "General"
+                    ensure_category_layout(connection, page_id, category)
+                    connection.execute("""INSERT INTO services (name,type,url,category,page_id,icon,enabled,status_check,favorite,card_size,sort_order,management_provider,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (name_value, type_value, url_value, category, page_id, (str(raw.get("icon") or "").strip()[:32] or None), int(bool(raw.get("enabled", True))), int(bool(raw.get("status_check", True))), int(bool(raw.get("favorite", False))), raw.get("card_size") if raw.get("card_size") in {"compact","standard","wide"} else "standard", int(raw.get("sort_order") or index), "none", now, now))
+            raw_widgets = raw_page.get("widgets", [])
+            if isinstance(raw_widgets, list):
+                for index, raw in enumerate(raw_widgets[:1000], start=1):
+                    if not isinstance(raw, dict): continue
+                    widget_type = str(raw.get("type", "note"))
+                    if widget_type not in {"clock","note","bookmarks","system_summary","service_status","update_overview"}: continue
+                    title = str(raw.get("title", "Widget")).strip()[:80] or "Widget"
+                    category = str(raw.get("category", "Widgets")).strip()[:80] or "Widgets"
+                    ensure_category_layout(connection, page_id, category)
+                    config = normalize_widget_config(widget_type, raw.get("config") if isinstance(raw.get("config"), dict) else {})
+                    connection.execute("""INSERT INTO dashboard_widgets (type,title,page_id,category,card_size,sort_order,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""", (widget_type, title, page_id, category, raw.get("card_size") if raw.get("card_size") in {"compact","standard","wide"} else "standard", int(raw.get("sort_order") or index), int(bool(raw.get("enabled", True))), json.dumps(config,separators=(",",":")), now, now))
+        rows = connection.execute("SELECT * FROM dashboard_pages ORDER BY sort_order, id").fetchall()
+    return [row_to_page(row) for row in rows]
 
 
 @app.get("/api/pages", response_model=list[DashboardPage])
@@ -2815,6 +2955,31 @@ def update_page(page_id: int, payload: DashboardPageUpdate, _: SessionUser = Dep
     return row_to_page(row)
 
 
+@app.post("/api/pages/{page_id}/clone", response_model=DashboardPage, status_code=status.HTTP_201_CREATED)
+def clone_page(page_id: int, payload: PageCloneRequest, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+    now = iso_now()
+    with db() as connection:
+        require_page(connection, page_id)
+        sort_order = int(connection.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM dashboard_pages").fetchone()[0])
+        try:
+            cursor = connection.execute("INSERT INTO dashboard_pages (name, sort_order, is_default, created_at, updated_at) VALUES (?, ?, 0, ?, ?)", (payload.name, sort_order, now, now))
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A page with that name already exists") from exc
+        new_page_id = int(cursor.lastrowid)
+        for category in connection.execute("SELECT * FROM category_layouts WHERE page_id = ? ORDER BY sort_order, name COLLATE NOCASE", (page_id,)).fetchall():
+            connection.execute("INSERT INTO category_layouts (page_id, name, sort_order, collapsed, icon) VALUES (?, ?, ?, ?, ?)", (new_page_id, category["name"], category["sort_order"], category["collapsed"], category["icon"] if "icon" in category.keys() else None))
+        for service in connection.execute("SELECT * FROM services WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
+            connection.execute(
+                """INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (service["name"], service["type"], service["url"], service["category"], new_page_id, service["icon"], service["enabled"], service["status_check"], service["favorite"], service["card_size"], service["sort_order"], service["api_key_encrypted"], service["auth_username_encrypted"], service["auth_password_encrypted"], service["management_provider"], service["management_target"], service["management_controller_service_id"], service["management_connection_id"], now, now),
+            )
+        for widget in connection.execute("SELECT * FROM dashboard_widgets WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
+            connection.execute("""INSERT INTO dashboard_widgets (type, title, page_id, category, card_size, sort_order, enabled, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (widget["type"], widget["title"], new_page_id, widget["category"], widget["card_size"], widget["sort_order"], widget["enabled"], widget["config_json"], now, now))
+        row = connection.execute("SELECT * FROM dashboard_pages WHERE id = ?", (new_page_id,)).fetchone()
+    return row_to_page(row)
+
+
 @app.post("/api/pages/reorder", response_model=list[DashboardPage])
 def reorder_pages(payload: PageReorder, _: SessionUser = Depends(require_write_auth)) -> list[DashboardPage]:
     if len(payload.ordered_ids) != len(set(payload.ordered_ids)):
@@ -2853,7 +3018,7 @@ def list_categories(_: SessionUser = Depends(require_auth)) -> list[CategoryLayo
         ensure_category_layouts(connection)
         rows = connection.execute(
             """
-            SELECT c.page_id, c.name, c.sort_order, c.collapsed
+            SELECT c.page_id, c.name, c.sort_order, c.collapsed, c.icon
             FROM category_layouts c
             WHERE EXISTS (
                 SELECT 1 FROM services s
@@ -2866,6 +3031,35 @@ def list_categories(_: SessionUser = Depends(require_auth)) -> list[CategoryLayo
             """
         ).fetchall()
     return [row_to_category(row) for row in rows]
+
+
+@app.put("/api/categories/configure", response_model=CategoryLayout)
+def configure_category(payload: CategoryUpdate, _: SessionUser = Depends(require_write_auth)) -> CategoryLayout:
+    with db() as connection:
+        require_page(connection, payload.page_id)
+        ensure_category_layout(connection, payload.page_id, payload.old_name)
+        current = connection.execute(
+            "SELECT * FROM category_layouts WHERE page_id = ? AND name = ? COLLATE NOCASE",
+            (payload.page_id, payload.old_name),
+        ).fetchone()
+        if not current:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+        if payload.name != payload.old_name:
+            conflict = None
+            if payload.name.casefold() != payload.old_name.casefold():
+                conflict = connection.execute(
+                    "SELECT 1 FROM category_layouts WHERE page_id = ? AND name = ? COLLATE NOCASE",
+                    (payload.page_id, payload.name),
+                ).fetchone()
+            if conflict:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A category with that name already exists on this page")
+            connection.execute("UPDATE services SET category = ?, updated_at = ? WHERE page_id = ? AND category = ? COLLATE NOCASE", (payload.name, iso_now(), payload.page_id, payload.old_name))
+            connection.execute("UPDATE dashboard_widgets SET category = ?, updated_at = ? WHERE page_id = ? AND category = ? COLLATE NOCASE", (payload.name, iso_now(), payload.page_id, payload.old_name))
+            connection.execute("UPDATE category_layouts SET name = ?, icon = ? WHERE page_id = ? AND name = ? COLLATE NOCASE", (payload.name, payload.icon, payload.page_id, payload.old_name))
+        else:
+            connection.execute("UPDATE category_layouts SET icon = ? WHERE page_id = ? AND name = ? COLLATE NOCASE", (payload.icon, payload.page_id, payload.old_name))
+        row = connection.execute("SELECT * FROM category_layouts WHERE page_id = ? AND name = ? COLLATE NOCASE", (payload.page_id, payload.name)).fetchone()
+    return row_to_category(row)
 
 
 @app.patch("/api/categories/state", response_model=CategoryLayout)
@@ -2912,7 +3106,7 @@ def reorder_categories(payload: CategoryReorder, _: SessionUser = Depends(requir
             )
         rows = connection.execute(
             """
-            SELECT c.page_id, c.name, c.sort_order, c.collapsed
+            SELECT c.page_id, c.name, c.sort_order, c.collapsed, c.icon
             FROM category_layouts c
             WHERE c.page_id = ? AND (EXISTS (
                 SELECT 1 FROM services s WHERE s.page_id = c.page_id AND s.category = c.name COLLATE NOCASE
@@ -3014,7 +3208,7 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
                 int(service.status_check),
                 int(service.favorite),
                 service.card_size,
-                int(connection.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE page_id = ? AND category = ?", (service.page_id, service.category)).fetchone()[0]),
+                int(connection.execute("""SELECT COALESCE(MAX(sort_order), 0) + 1 FROM (SELECT sort_order FROM services WHERE page_id = ? AND category = ? COLLATE NOCASE UNION ALL SELECT sort_order FROM dashboard_widgets WHERE page_id = ? AND category = ? COLLATE NOCASE)""", (service.page_id, service.category, service.page_id, service.category)).fetchone()[0]),
                 encrypt_secret(service.api_key),
                 encrypt_secret(service.auth_username),
                 encrypt_secret(service.auth_password),
@@ -3057,8 +3251,8 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
         sort_order = service.sort_order
         if service.category != current["category"] or service.page_id != current["page_id"]:
             sort_order = int(connection.execute(
-                "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE page_id = ? AND category = ?",
-                (service.page_id, service.category),
+                """SELECT COALESCE(MAX(sort_order), 0) + 1 FROM (SELECT sort_order FROM services WHERE page_id = ? AND category = ? COLLATE NOCASE UNION ALL SELECT sort_order FROM dashboard_widgets WHERE page_id = ? AND category = ? COLLATE NOCASE)""",
+                (service.page_id, service.category, service.page_id, service.category),
             ).fetchone()[0])
         connection.execute(
             """
@@ -3144,6 +3338,24 @@ def reorder_services(payload: ServiceReorder, _: SessionUser = Depends(require_w
             (payload.page_id, payload.category),
         ).fetchall()
     return [row_to_service(row) for row in ordered_rows]
+
+
+@app.post("/api/dashboard-items/reorder")
+def reorder_dashboard_items(payload: DashboardItemReorder, _: SessionUser = Depends(require_write_auth)) -> dict[str, bool]:
+    keys = [(item.kind, item.id) for item in payload.ordered_items]
+    if len(keys) != len(set(keys)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate dashboard items in reorder request")
+    with db() as connection:
+        service_rows = connection.execute("SELECT id FROM services WHERE page_id = ? AND category = ? COLLATE NOCASE", (payload.page_id, payload.category)).fetchall()
+        widget_rows = connection.execute("SELECT id FROM dashboard_widgets WHERE page_id = ? AND category = ? COLLATE NOCASE", (payload.page_id, payload.category)).fetchall()
+        expected = {("service", int(row["id"])) for row in service_rows} | {("widget", int(row["id"])) for row in widget_rows}
+        if set(keys) != expected:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dashboard reorder must include every service and widget in the category")
+        now = iso_now()
+        for position, item in enumerate(payload.ordered_items, start=1):
+            table = "services" if item.kind == "service" else "dashboard_widgets"
+            connection.execute(f"UPDATE {table} SET sort_order = ?, updated_at = ? WHERE id = ?", (position, now, item.id))
+    return {"ok": True}
 
 
 @app.delete("/api/services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
