@@ -6,7 +6,7 @@ Current TrueNAS SCALE releases use Docker for Apps and support third-party appli
 
 1. Configure an Apps pool in **Apps > Settings** if one is not already configured.
 2. Open **Apps > Discover Apps > Custom App**.
-3. Use image repository `ghcr.io/gatiger/homelab-dashboard` and tag `latest` (or a specific version such as `0.17.0`).
+3. Use image repository `ghcr.io/gatiger/homelab-dashboard` and tag `latest` (or a specific version such as `0.18.0`).
 4. Publish container port `80` to an unused host port such as `8080`.
 5. Configure persistent storage so a TrueNAS dataset/path is mounted at `/app/data`.
 6. Add environment variables only if needed (`APP_NAME`, `SESSION_HOURS`, `COOKIE_SECURE`, `STATUS_TIMEOUT`, `STATUS_WORKERS`).

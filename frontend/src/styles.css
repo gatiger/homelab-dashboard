@@ -690,3 +690,29 @@ h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1; margin: 0; letter-spacin
   .registry-heading { display: grid; }
   .registry-heading em { white-space: normal; }
 }
+
+/* v0.18 users and roles */
+.role-guide { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.role-guide > div { display: grid; gap: 4px; padding: 11px 12px; border: 1px solid var(--theme-border-soft); border-radius: 10px; background: color-mix(in srgb, var(--theme-surface-alt) 58%, transparent); }
+.role-guide strong { color: var(--theme-text); font-size: .78rem; }
+.role-guide span { color: var(--theme-subtle); font-size: .68rem; line-height: 1.4; }
+.user-admin-list { display: grid; gap: 10px; }
+.user-admin-row { display: grid; gap: 11px; padding: 13px; border: 1px solid var(--theme-border-soft); border-radius: 12px; background: color-mix(in srgb, var(--theme-surface) 76%, transparent); }
+.user-admin-row.user-disabled { opacity: .7; }
+.user-admin-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.user-admin-heading > span { display: grid; gap: 3px; }
+.user-admin-heading strong { color: var(--theme-text); font-size: .82rem; }
+.user-admin-heading small, .user-admin-heading em { color: var(--theme-subtle); font-size: .68rem; font-style: normal; }
+.user-admin-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.user-admin-controls label:not(.check-row) { display: grid; gap: 5px; min-width: 145px; }
+.user-admin-controls label > span { color: var(--theme-muted); font-size: .68rem; font-weight: 700; }
+.user-admin-controls select, .user-reset-row input { color: var(--theme-text); background: var(--theme-surface); border: 1px solid var(--theme-border); border-radius: 9px; padding: 8px 9px; }
+.user-admin-controls .check-row { min-height: 35px; padding: 0 4px; }
+.user-reset-row { display: grid; grid-template-columns: minmax(180px, 1fr) auto; gap: 8px; }
+@media (max-width: 680px) {
+  .role-guide { grid-template-columns: 1fr; }
+  .user-admin-heading { display: grid; }
+  .user-admin-controls { display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; }
+  .user-admin-controls label:not(.check-row) { min-width: 0; grid-column: 1 / -1; }
+  .user-reset-row { grid-template-columns: 1fr; }
+}

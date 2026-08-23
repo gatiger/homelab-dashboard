@@ -16,7 +16,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Open `http://SERVER-IP:8080` and create the first administrator account.
+Open `http://SERVER-IP:8080` and create the first Owner account.
 
 ## Change the port
 
@@ -31,7 +31,7 @@ DASHBOARD_PORT=8082
 `latest` follows the newest stable release. For predictable upgrades, pin a version:
 
 ```env
-DASHBOARD_VERSION=0.17.0
+DASHBOARD_VERSION=0.18.0
 ```
 
 ## Optional local Docker statistics

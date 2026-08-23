@@ -178,7 +178,7 @@ Additional management providers are tracked separately below rather than making 
 - Community extension registry/discovery ✅
 - Installable/community integration adapter runtime 🚧
 - Community executable widget packs 🚧
-- Role-based permissions 🚧
+- Role-based permissions ✅
 - Native/OIDC/SSO/reverse-proxy authentication adapters 🚧
 - OIDC / Authentik / Authelia support 🚧
 
@@ -195,6 +195,19 @@ Additional management providers are tracked separately below rather than making 
 - Manual JSON import fallback when the registry is offline
 - Registry contribution format, maintainer validator, and CI checks
 - Package signing/transparency remains a future prerequisite before executable third-party extensions
+
+
+## Milestone 18 — Users and role-based permissions ✅
+
+- Local multi-user account store with automatic migration of the legacy administrator
+- Owner / Admin / Editor / Viewer roles
+- Server-side permission enforcement for dashboard editing, secrets, updates, connections, extensions, settings, and users
+- Settings → Users lifecycle management
+- Per-user password recovery and security audit history
+- Immediate session invalidation when an account is disabled or password-reset
+- Last-enabled-Owner safeguards
+- Role-aware dashboard controls and read-only Viewer experience
+- Host-side user listing and targeted emergency password reset
 
 ## Management-provider follow-ups 🚧
 

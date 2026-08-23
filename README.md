@@ -13,7 +13,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Open `http://SERVER-IP:8080`, create the first administrator account, and add services from the catalog.
+Open `http://SERVER-IP:8080`, create the first Owner account, and add services from the catalog.
 
 See **[Installation guides](docs/installation/README.md)** for platform-specific steps.
 
@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.17.0
+ghcr.io/gatiger/homelab-dashboard:0.18.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -62,7 +62,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 
 ## Current features
 
-- First-run administrator setup, password-protected dashboard, password changes, and recovery codes
+- First-run Owner setup, local multi-user accounts, Owner/Admin/Editor/Viewer roles, password changes, and per-user recovery codes
 - SQLite persistence and encrypted saved integration secrets
 - Searchable service catalog with common self-hosted applications
 - Recognizable bundled service logos with generic/custom fallbacks
@@ -85,7 +85,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Reusable management Connections so platform credentials do not require visible controller cards
 - Standardized managed-card update indicators with glowing current/available/error states
 - Automatic in-browser telemetry/update-state refresh without manually reloading the page
-- Central Settings hub for General, Account, Dashboard, Appearance, Connections, Monitoring, Extensions, and About
+- Central Settings hub for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Extensions, and About
 - Configurable browser telemetry/update refresh intervals and scheduled update-discovery interval
 - Built-in Clock/Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets
 - Widgets can be assigned to any page/category and use Compact/Standard/Wide card sizes
@@ -112,11 +112,13 @@ The update agent is not required for normal dashboard use. See [Update Manager](
 
 ## Settings, themes, widgets, and extensions
 
-Open **Settings** for General, Account, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. The Account section supports password changes, one-time recovery-code generation, and recent security activity; the login screen can use a saved recovery code when the password is forgotten. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
+Open **Settings** for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. v0.18 adds local multi-user roles: **Owner** (full control including users), **Admin** (full operational/configuration control except user management), **Editor** (dashboard/page/widget/basic service editing without credentials or update controls), and **Viewer** (read-only). The Account section supports per-user password changes, one-time recovery-code generation, and recent security activity; the login screen can use a saved recovery code when the password is forgotten. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
+
+See [Users and roles](docs/configuration/users-roles.md) and [Account recovery](docs/configuration/account-recovery.md) for the local-account security model.
 
 The built-in widget pack includes Clock & Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets. Widgets are stored in SQLite and can be assigned to any dashboard page/category with Compact, Standard, or Wide sizing. See [Widgets](docs/configuration/widgets.md) and [Settings](docs/configuration/settings.md). See [Advanced dashboard builder](docs/configuration/dashboard-builder.md) for mixed ordering, category customization, page cloning, layout import/export, and the compact command bar.
 
-For a complete lockout where both the password and recovery code are unavailable, someone with legitimate shell access to the dashboard host can run `docker exec -it <dashboard-container> python -m app.admin reset-password`. This emergency path resets the local administrator password, invalidates all existing sessions, and rotates the recovery code. See [Account recovery](docs/configuration/account-recovery.md).
+For a complete lockout where both the password and recovery code are unavailable, someone with legitimate shell access to the dashboard host can run `docker exec -it <dashboard-container> python -m app.admin reset-password USERNAME` (or omit the username to target the first Owner). This emergency path resets that local user's password, invalidates their sessions, enables the account, and rotates the recovery code. See [Account recovery](docs/configuration/account-recovery.md).
 
 Community themes can be imported as validated JSON packages. Versioned **data-only extension packages** can register reusable dashboard page templates and service-catalog metadata. Page templates can be exported directly from an existing page; secrets and management links are excluded before the package reaches the browser. Installed data packs can be enabled, disabled, updated, or removed without deleting pages/cards that were already created from them.
 

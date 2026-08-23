@@ -1,6 +1,6 @@
 # Settings
 
-The central **Settings** hub keeps configuration from expanding across the dashboard header. v0.15 adds an Account section for password and recovery management.
+The central **Settings** hub keeps configuration from expanding across the dashboard header. v0.18 makes Settings role-aware and adds Owner-only local user management.
 
 ## General
 
@@ -23,6 +23,10 @@ Account settings provide:
 
 Changing the password invalidates other active sessions. Recovery codes are shown only when generated and are stored only as digests. See [Account recovery](account-recovery.md).
 
+## Users
+
+Owners see **Settings → Users**. It provides local account creation, role changes, enable/disable controls, Owner-initiated password resets, and deletion. Admin, Editor, and Viewer accounts do not receive this tab. See [Users and roles](users-roles.md).
+
 ## Dashboard
 
 Dashboard settings provide:
@@ -38,11 +42,11 @@ Appearance links to the theme manager. In addition to built-in/imported themes, 
 
 ## Connections
 
-Connections links to reusable management connections such as TrueNAS. Connections remain independent from visible service cards.
+Owner/Admin accounts can manage reusable management connections such as TrueNAS. Connections remain independent from visible service cards.
 
 ## Monitoring
 
-The following intervals can be changed without rebuilding or recreating the dashboard container:
+Owner/Admin accounts can change the following intervals without rebuilding or recreating the dashboard container:
 
 - **Service telemetry refresh** — how often an open browser refreshes live HTTP/integration data.
 - **Update-state refresh** — how often an open browser reads the already-cached update state.
@@ -53,15 +57,4 @@ The browser refresh intervals do not themselves pull Docker images or repeatedly
 
 ## Extensions
 
-The Extension Manager remains deliberately conservative. It inventories:
-
-- Built-in core modules.
-- The built-in widget pack.
-- Imported data-only themes.
-
-Imported themes can be removed from the manager. v0.15 does **not** execute arbitrary community plugin code. The permission-aware executable extension runtime remains a later milestone.
-
-
-## Extensions
-
-Settings → Extensions inventories built-in modules, themes, and imported extension packages. v0.17 also browses the configured extension registry, shows trust/compatibility metadata, checks for newer package versions, and installs or updates checksum-verified data-only page-template/service-catalog packs. Manual JSON import remains available if the registry is offline. Executable third-party plugins remain disabled.
+Owner/Admin accounts can use Settings → Extensions to inventory built-in modules, themes, and imported extension packages. v0.17 also browses the configured extension registry, shows trust/compatibility metadata, checks for newer package versions, and installs or updates checksum-verified data-only page-template/service-catalog packs. Manual JSON import remains available if the registry is offline. Executable third-party plugins remain disabled.

@@ -15,12 +15,25 @@
 
 - **Production application container:** Nginx serves the React/TypeScript frontend and proxies `/api` to the local FastAPI process inside the same image. The source tree still keeps frontend and backend concerns separate for development.
 - **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata; enabled community catalog packs are merged into the runtime picker as validated data-only entries.
-- **Backend:** FastAPI authentication, configuration, health checks, secret storage, and integration adapters.
-- **Database:** SQLite in a persistent Docker volume. Services, pages, widgets, Settings, appearance selection, imported theme manifests, installed data-extension manifests, connections, and update history are stored alongside dashboard configuration.
+- **Backend:** FastAPI authentication/RBAC, configuration, health checks, secret storage, and integration adapters.
+- **Database:** SQLite in a persistent Docker volume. Local users/sessions, services, pages, widgets, Settings, appearance selection, imported theme manifests, installed data-extension manifests, connections, and update history are stored alongside dashboard configuration.
 - **Theme layer:** Frontend components consume validated design tokens. Built-in and imported themes share the same data shape; imported theme packages are non-executable JSON.
 - **Integration adapters:** Service-specific backend functions for supported rich cards; unsupported catalog entries still work as generic monitored links.
 - **Docker access (optional):** The base deployment has no Docker socket access. Read-only insight uses a restricted socket proxy. One-click Docker Compose updates use a separate update-agent sidecar on a private internal network; only that agent receives the raw socket.
 - **Reverse proxy:** Caddy, Traefik, Nginx, or another user-selected proxy.
+
+## Authentication and RBAC
+
+v0.18 replaces the single-administrator runtime model with local multi-user authorization while migrating the legacy administrator into the new user store as the first **Owner**. Existing valid sessions are copied during migration. Authentication remains cookie/session based with per-session CSRF tokens for state-changing requests.
+
+Roles map to explicit permissions rather than frontend-only feature flags:
+
+- **Owner:** all permissions, including local user administration.
+- **Admin:** dashboard/service/secrets/update/connection/extension/global-settings management, but no user administration.
+- **Editor:** dashboard/page/widget/basic service-card editing; no saved-secret, management-provider, extension, global-settings, or update execution privileges.
+- **Viewer:** authenticated read-only dashboard access.
+
+Permission dependencies are enforced on backend routes. Sensitive service edits additionally compare credential/management fields so an Editor cannot smuggle API keys or management-provider changes through the normal service-edit endpoint. Disabled users are rejected during session resolution and password resets invalidate that user's sessions.
 
 ## Service model
 
@@ -30,7 +43,7 @@ The catalog is intentionally separate from configured services. A catalog entry 
 
 ## Extension path
 
-v0.9 established non-executable theme manifests. v0.10 added explicit backend integration descriptors and a shared activity/progress model. v0.16 added the first general `homelab-dashboard-extension` manifest and persistent install/enable/disable/remove lifecycle. v0.17 adds registry discovery and checksum-verified install/update flows. The runtime still accepts only two safe data capabilities: reusable page templates and service-catalog metadata.
+v0.9 established non-executable theme manifests. v0.10 added explicit backend integration descriptors and a shared activity/progress model. v0.16 added the first general `homelab-dashboard-extension` manifest and persistent install/enable/disable/remove lifecycle. v0.17 added registry discovery and checksum-verified install/update flows. v0.18 adds role-based authorization that future extension permissions can bind to. The runtime still accepts only two safe data capabilities: reusable page templates and service-catalog metadata.
 
 General extension manifests declare both capabilities and requested permissions. The current allow-list grants registration only; unknown permissions are rejected and no package can execute code, access Docker, read stored credentials, open arbitrary network connections, or access the host filesystem. Future executable widgets/integrations/authentication adapters will require a separate sandboxed SDK and broader permission design. See `docs/extensions/architecture.md` and `docs/extensions/packages.md`.
 

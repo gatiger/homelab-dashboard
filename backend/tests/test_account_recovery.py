@@ -93,8 +93,13 @@ def test_v014_admin_schema_migrates_in_place(tmp_path: Path) -> None:
     connection.row_factory = sqlite3.Row
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(admin_users)").fetchall()}
     row = connection.execute("SELECT * FROM admin_users WHERE id = 1").fetchone()
+    migrated = connection.execute("SELECT * FROM dashboard_users WHERE id = 1").fetchone()
     assert row is not None
     assert row["username"] == "existing"
+    assert migrated is not None
+    assert migrated["username"] == "existing"
+    assert migrated["role"] == "owner"
+    assert bool(migrated["enabled"])
     assert {"recovery_code_hash", "recovery_generated_at", "password_changed_at"} <= columns
     assert connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='account_audit'").fetchone()
     connection.close()
@@ -105,12 +110,15 @@ def test_emergency_host_reset_rotates_credentials(tmp_path: Path, monkeypatch) -
     main.init_db()
     with main.db() as connection:
         now = main.iso_now()
-        connection.execute(
-            "INSERT INTO admin_users (id, username, password_hash, password_changed_at, created_at) VALUES (1, ?, ?, ?, ?)",
+        cursor = connection.execute(
+            """INSERT INTO dashboard_users
+               (username, password_hash, role, enabled, password_changed_at, created_at)
+               VALUES (?, ?, 'owner', 1, ?, ?)""",
             ("admin", main.hash_password("OldPassword123!"), now, now),
         )
-        old_recovery = main.rotate_recovery_code(connection, 1).recovery_code
-        main.create_session(connection, 1)
+        user_id = int(cursor.lastrowid)
+        old_recovery = main.rotate_recovery_code(connection, user_id).recovery_code
+        main.create_session(connection, user_id)
 
     from app import admin
 
@@ -119,9 +127,9 @@ def test_emergency_host_reset_rotates_credentials(tmp_path: Path, monkeypatch) -
     assert admin.reset_password() == 0
 
     with main.db() as connection:
-        row = connection.execute("SELECT password_hash, recovery_code_hash FROM admin_users WHERE id = 1").fetchone()
+        row = connection.execute("SELECT password_hash, recovery_code_hash FROM dashboard_users WHERE username = 'admin'").fetchone()
         assert main.verify_password("EmergencyPass123!", row["password_hash"])
         assert row["recovery_code_hash"] != main.recovery_code_digest(old_recovery)
-        assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM dashboard_sessions").fetchone()[0] == 0
         events = {row["event"] for row in connection.execute("SELECT event FROM account_audit").fetchall()}
         assert "emergency_password_reset" in events

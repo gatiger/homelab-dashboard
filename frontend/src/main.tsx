@@ -30,12 +30,14 @@ import "./styles.css";
 import { SERVICE_CATALOG, catalogSearchText, urlPlaceholder, type CatalogEntry } from "./serviceCatalog";
 import { BUILTIN_THEMES, BUILTIN_THEME_BY_ID, THEME_TEMPLATE, applyTheme, resolveTheme, type ThemePackage } from "./themes";
 import { WidgetCard, WidgetModal, type DashboardWidget } from "./widgets";
-import { SettingsModal, type AccountSummary, type DashboardSettings, type ExtensionDescriptor, type ExtensionRegistryItem, type ExtensionRegistryResponse, type RecoveryCodeResult } from "./settings";
+import { SettingsModal, type AccountSummary, type DashboardSettings, type ExtensionDescriptor, type ExtensionRegistryItem, type ExtensionRegistryResponse, type RecoveryCodeResult, type UserSummary } from "./settings";
 
 type AuthStatus = {
   setup_required: boolean;
   authenticated: boolean;
   username?: string | null;
+  role?: "owner" | "admin" | "editor" | "viewer" | null;
+  permissions: string[];
   csrf_token?: string | null;
   recovery_code?: string | null;
 };
@@ -208,7 +210,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.17.0";
+const APP_VERSION = "0.18.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -372,9 +374,9 @@ function AuthScreen({ status, onAuthenticated }: { status: AuthStatus; onAuthent
     setRecovering(false); setError(""); setRecoveryCode(""); setPassword(""); setConfirmPassword("");
   }
 
-  const title = isSetup ? "Create your admin account" : recovering ? "Recover your account" : "Welcome back";
+  const title = isSetup ? "Create your owner account" : recovering ? "Recover your account" : "Welcome back";
   const subhead = isSetup
-    ? "This account protects your dashboard and service configuration. You'll receive a one-time recovery code after setup."
+    ? "The first account is the Owner and can later create Admin, Editor, or Viewer accounts. You'll receive a one-time recovery code after setup."
     : recovering
       ? "Enter the recovery code you saved earlier. A successful reset replaces it with a new recovery code."
       : "Sign in to open your homelab dashboard.";
@@ -535,6 +537,7 @@ function ServiceModal({
   allServices,
   connections,
   catalogEntries,
+  canManageSecrets,
 }: {
   service: Service | null;
   template?: CatalogEntry | null;
@@ -547,6 +550,7 @@ function ServiceModal({
   allServices: Service[];
   connections: ManagementConnection[];
   catalogEntries: CatalogEntry[];
+  canManageSecrets: boolean;
 }) {
   const catalogByType = useMemo(() => Object.fromEntries(catalogEntries.map((entry) => [entry.type, entry])) as Record<string, CatalogEntry>, [catalogEntries]);
   const initialTemplate = template ?? (service ? catalogByType[service.type] : null);
@@ -605,6 +609,7 @@ function ServiceModal({
   useEffect(() => {
     let cancelled = false;
     async function loadManagedResources() {
+      if (!canManageSecrets) { setManagedResources([]); setResourceError(""); return; }
       if (form.management_provider === "none") { setManagedResources([]); setResourceError(""); return; }
       if (form.management_provider === "truenas_app" && !form.management_connection_id) { setManagedResources([]); setResourceError(""); return; }
       setResourceLoading(true);
@@ -623,7 +628,7 @@ function ServiceModal({
     }
     void loadManagedResources();
     return () => { cancelled = true; };
-  }, [form.management_provider, form.management_connection_id]);
+  }, [form.management_provider, form.management_connection_id, canManageSecrets]);
 
   function setField<K extends keyof ServiceForm>(key: K, value: ServiceForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -726,7 +731,7 @@ function ServiceModal({
               <input value={form.icon} onChange={(event) => setField("icon", event.target.value)} placeholder="🔗" />
             </label>
           )}
-          {API_KEY_INTEGRATIONS[form.type] && (
+          {canManageSecrets && API_KEY_INTEGRATIONS[form.type] && (
             <>
               <label className="span-2">
                 <span>{API_KEY_INTEGRATIONS[form.type].label} <small>optional, {API_KEY_INTEGRATIONS[form.type].hint}</small></span>
@@ -747,7 +752,7 @@ function ServiceModal({
               )}
             </>
           )}
-          {form.type === "truenas" && (
+          {canManageSecrets && form.type === "truenas" && (
             <>
               <label className="span-2">
                 <span>TrueNAS API-key username <small>optional on current releases, recommended for future compatibility</small></span>
@@ -767,7 +772,7 @@ function ServiceModal({
               )}
             </>
           )}
-          {form.type === "qbittorrent" && (
+          {canManageSecrets && form.type === "qbittorrent" && (
             <>
               <label>
                 <span>qBittorrent WebUI username</span>
@@ -797,7 +802,7 @@ function ServiceModal({
               )}
             </>
           )}
-          <div className="span-2 management-section">
+          {canManageSecrets && <div className="span-2 management-section">
             <div className="management-heading">
               <div><strong>Update management</strong><small> Optional · lets this card update the service without opening its native UI.</small></div>
             </div>
@@ -842,7 +847,9 @@ function ServiceModal({
                 </label>
               )}
             </div>
-          </div>
+          </div>}
+
+          {!canManageSecrets && <div className="settings-callout span-2"><strong>Editor access</strong><span>Credentials and update-management settings are hidden for this role. An Owner or Admin can configure those fields.</span></div>}
 
           <label>
             <span>Card size</span>
@@ -1305,6 +1312,7 @@ function UpdateManagerModal({
   jobs,
   busy,
   catalogEntries,
+  canRunUpdates,
   onClose,
   onCheck,
   onUpdate,
@@ -1315,6 +1323,7 @@ function UpdateManagerModal({
   jobs: UpdateJob[];
   busy: boolean;
   catalogEntries: CatalogEntry[];
+  canRunUpdates: boolean;
   onClose: () => void;
   onCheck: () => void;
   onUpdate: (service: Service) => void;
@@ -1336,8 +1345,10 @@ function UpdateManagerModal({
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button>
         </header>
         <div className="update-toolbar">
-          <button className="secondary" type="button" disabled={busy || !!active} onClick={onCheck}><RefreshCw className={active?.kind === "check" ? "spin" : ""} size={16} /> Check for updates</button>
-          <button className="primary" type="button" disabled={busy || !!active || available.length === 0} onClick={onUpdateAll}><ArrowUpCircle size={17} /> Update all ({available.length})</button>
+          {canRunUpdates ? <>
+            <button className="secondary" type="button" disabled={busy || !!active} onClick={onCheck}><RefreshCw className={active?.kind === "check" ? "spin" : ""} size={16} /> Check for updates</button>
+            <button className="primary" type="button" disabled={busy || !!active || available.length === 0} onClick={onUpdateAll}><ArrowUpCircle size={17} /> Update all ({available.length})</button>
+          </> : <div className="settings-callout"><strong>Read-only update view</strong><span>Your role can see update status and history but cannot start updates.</span></div>}
         </div>
         {active && (
           <div className="update-active">
@@ -1362,7 +1373,7 @@ function UpdateManagerModal({
                   {(state?.current_version || state?.latest_version) && <small className="version-line">{state.current_version ?? "?"}{state.latest_version && state.latest_version !== state.current_version ? ` → ${state.latest_version}` : ""}</small>}
                   {state?.message && <small>{state.message}</small>}
                 </div>
-                <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? "Updating…" : "Update"}</button>
+                {canRunUpdates && <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? "Updating…" : "Update"}</button>}
               </div>
             );
           })}
@@ -1378,7 +1389,7 @@ function UpdateManagerModal({
   );
 }
 
-function CardManagementStatus({ service, state, job, manageMode, onUpdate }: { service: Service; state?: ServiceUpdateState; job?: UpdateJob; manageMode: boolean; onUpdate: (service: Service) => void }) {
+function CardManagementStatus({ service, state, job, manageMode, canUpdate, onUpdate }: { service: Service; state?: ServiceUpdateState; job?: UpdateJob; manageMode: boolean; canUpdate: boolean; onUpdate: (service: Service) => void }) {
   if (service.management_provider === "none") return <div className="card-management-slot card-management-empty" aria-hidden="true"><span>Management not configured</span></div>;
   if (job) return (
     <div className="card-management-slot card-management-running">
@@ -1398,7 +1409,7 @@ function CardManagementStatus({ service, state, job, manageMode, onUpdate }: { s
   return (
     <div className={`card-management-slot management-${current}`} title={state?.message ?? label}>
       <div className={`management-status-line management-${current}`}><span className="management-status-dot" /><strong>{label}</strong>{version && <small className="management-version">{version}</small>}</div>
-      {current === "available" && !manageMode && <button className="card-update-action" type="button" onClick={() => onUpdate(service)}><ArrowUpCircle size={14} /> Update</button>}
+      {current === "available" && !manageMode && canUpdate && <button className="card-update-action" type="button" onClick={() => onUpdate(service)}><ArrowUpCircle size={14} /> Update</button>}
     </div>
   );
 }
@@ -1442,6 +1453,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
+  const [users, setUsers] = useState<UserSummary[]>([]);
   const [oneTimeRecoveryCode, setOneTimeRecoveryCode] = useState<string | null>(auth.recovery_code ?? null);
   const [editingWidget, setEditingWidget] = useState<DashboardWidget | null | undefined>(undefined);
   const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>({ dashboard_title: "Homelab Dashboard", show_greeting: true, telemetry_refresh_seconds: 15, update_status_refresh_seconds: 15, active_refresh_seconds: 3, update_check_interval_hours: 12 });
@@ -1460,6 +1472,16 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [editingCategory, setEditingCategory] = useState<CategoryLayout | null>(null);
   const commandBarRef = useRef<HTMLDivElement | null>(null);
   const layoutImportRef = useRef<HTMLInputElement | null>(null);
+
+  const can = (permission: string) => (auth.permissions ?? []).includes(permission);
+  const canEditDashboard = can("dashboard:edit");
+  const canManageServices = can("services:manage");
+  const canManageSecrets = can("secrets:manage");
+  const canRunUpdates = can("updates:run");
+  const canManageConnections = can("connections:manage");
+  const canManageExtensions = can("extensions:manage");
+  const canManageSettings = can("settings:manage");
+  const canManageUsers = can("users:manage");
 
   async function loadServices() {
     setLoading(true);
@@ -1533,6 +1555,32 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   async function loadAccount() {
     try { setAccountSummary(await api<AccountSummary>("/api/account")); }
     catch { /* Account details are available only after authentication and migration. */ }
+  }
+
+  async function loadUsers() {
+    if (!canManageUsers) { setUsers([]); return; }
+    try { setUsers(await api<UserSummary[]>("/api/users")); }
+    catch { setUsers([]); }
+  }
+
+  async function createLocalUser(username: string, password: string, role: UserSummary["role"]) {
+    await api<UserSummary>("/api/users", { method: "POST", body: JSON.stringify({ username, password, role }) }, auth.csrf_token);
+    await loadUsers();
+  }
+
+  async function updateLocalUser(user: UserSummary, role: UserSummary["role"], enabled: boolean) {
+    await api<UserSummary>(`/api/users/${user.id}`, { method: "PUT", body: JSON.stringify({ role, enabled }) }, auth.csrf_token);
+    await loadUsers();
+  }
+
+  async function resetLocalUserPassword(user: UserSummary, password: string) {
+    await api<void>(`/api/users/${user.id}/reset-password`, { method: "POST", body: JSON.stringify({ new_password: password }) }, auth.csrf_token);
+    await loadUsers();
+  }
+
+  async function deleteLocalUser(user: UserSummary) {
+    await api<void>(`/api/users/${user.id}`, { method: "DELETE" }, auth.csrf_token);
+    await loadUsers();
   }
 
   async function changeAccountPassword(currentPassword: string, newPassword: string) {
@@ -1659,7 +1707,10 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   useEffect(() => {
-    void Promise.all([loadServices(), loadWidgets(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData(), loadSettings(), loadExtensions(), loadAccount()]);
+    void Promise.all([
+      loadServices(), loadWidgets(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData(), loadSettings(), loadExtensions(), loadAccount(),
+      canManageUsers ? loadUsers() : Promise.resolve(),
+    ]);
     void refreshTelemetry();
     const onVisible = () => { if (document.visibilityState === "visible") { void refreshTelemetry(); void loadUpdateData(); void loadWidgets(); } };
     document.addEventListener("visibilitychange", onVisible);
@@ -1935,7 +1986,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     if (manifest.format !== "homelab-dashboard-extension") throw new Error("This is not a Homelab Dashboard extension package.");
     const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.map(String) : [];
     const capabilities = Array.isArray(manifest.capabilities) ? manifest.capabilities.map(String) : [];
-    const summary = [`Install ${String(manifest.name ?? file.name)}?`, "", `Capabilities: ${capabilities.join(", ") || "none"}`, `Permissions: ${permissions.join(", ") || "none"}`, "", "v0.17 accepts data-only extension packages only; executable plugin code is not supported."] .join("\n");
+    const summary = [`Install ${String(manifest.name ?? file.name)}?`, "", `Capabilities: ${capabilities.join(", ") || "none"}`, `Permissions: ${permissions.join(", ") || "none"}`, "", "v0.18 still accepts data-only extension packages only; executable plugin code is not supported."] .join("\n");
     if (!window.confirm(summary)) return;
     await api<ExtensionDescriptor>("/api/extensions/import", { method: "POST", body: JSON.stringify(manifest) }, auth.csrf_token);
     await Promise.all([loadExtensions(), loadExtensionRegistry(false)]);
@@ -2017,22 +2068,22 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           <button className={`command-button updates-command ${availableUpdateCount ? "has-attention" : ""}`} type="button" title={availableUpdateCount ? `${availableUpdateCount} update${availableUpdateCount === 1 ? "" : "s"} available` : "Updates"} onClick={() => { setAddMenuOpen(false); setAccountMenuOpen(false); setUpdatesOpen(true); void loadUpdateData(); }}>
             <ArrowUpCircle size={17} /><span className="command-label">Updates</span>{availableUpdateCount > 0 && <span className="command-badge">{availableUpdateCount}</span>}
           </button>
-          <button className={`command-button ${manageMode ? "active" : ""}`} type="button" title={manageMode ? "Finish arranging dashboard" : "Manage dashboard"} onClick={() => { setAddMenuOpen(false); setAccountMenuOpen(false); setManageMode((value) => !value); }}><LayoutGrid size={17} /><span className="command-label">{manageMode ? "Done" : "Manage"}</span></button>
-          <div className="command-menu-wrap">
+          {canEditDashboard && <button className={`command-button ${manageMode ? "active" : ""}`} type="button" title={manageMode ? "Finish arranging dashboard" : "Manage dashboard"} onClick={() => { setAddMenuOpen(false); setAccountMenuOpen(false); setManageMode((value) => !value); }}><LayoutGrid size={17} /><span className="command-label">{manageMode ? "Done" : "Manage"}</span></button>}
+          {canEditDashboard && <div className="command-menu-wrap">
             <button className={`command-button add-command ${addMenuOpen ? "active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={addMenuOpen} onClick={() => { setAddMenuOpen((value) => !value); setAccountMenuOpen(false); }}><Plus size={18} /><span className="command-label">Add</span><ChevronDown className="command-chevron" size={14} /></button>
             {addMenuOpen && <div className="command-menu" role="menu">
-              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); beginAdd(); }}><Plus size={16} /><span><strong>Add service</strong><small>Link or integrated application</small></span></button>
+              {canManageServices && <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); beginAdd(); }}><Plus size={16} /><span><strong>Add service</strong><small>Link or integrated application</small></span></button>}
               <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); setEditingWidget(null); }}><LayoutGrid size={16} /><span><strong>Add widget</strong><small>Clock, notes, status and more</small></span></button>
               <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); setEditingPage(null); }}><Plus size={16} /><span><strong>Add page</strong><small>Create another dashboard page</small></span></button>
             </div>}
-          </div>
+          </div>}
           <div className="command-menu-wrap">
             <button className={`command-button account-command ${accountMenuOpen ? "active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={accountMenuOpen} title="Dashboard menu" onClick={() => { setAccountMenuOpen((value) => !value); setAddMenuOpen(false); }}><Settings size={17} /><span className="command-label">Menu</span><ChevronDown className="command-chevron" size={14} /></button>
             {accountMenuOpen && <div className="command-menu command-menu-right" role="menu">
-              <div className="command-menu-user"><strong>{auth.username}</strong><small>Administrator</small></div>
-              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); void loadExtensions(); void loadAccount(); void loadExtensionRegistry(false); }}><Settings size={16} /><span><strong>Settings</strong><small>Account, dashboard and extensions</small></span></button>
-              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setConnectionsOpen(true); void loadConnections(); }}><Cable size={16} /><span><strong>Connections</strong><small>TrueNAS and future controllers</small></span></button>
-              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={16} /><span><strong>Appearance</strong><small>Themes and visual editor</small></span></button>
+              <div className="command-menu-user"><strong>{auth.username}</strong><small>{auth.role ? auth.role.charAt(0).toUpperCase() + auth.role.slice(1) : "User"}</small></div>
+              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); void loadAccount(); if (canManageExtensions) { void loadExtensions(); void loadExtensionRegistry(false); } if (canManageUsers) void loadUsers(); }}><Settings size={16} /><span><strong>Settings</strong><small>Account{canManageSettings ? ", dashboard and extensions" : ""}</small></span></button>
+              {canManageConnections && <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setConnectionsOpen(true); void loadConnections(); }}><Cable size={16} /><span><strong>Connections</strong><small>TrueNAS and future controllers</small></span></button>}
+              {canManageSettings && <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={16} /><span><strong>Appearance</strong><small>Themes and visual editor</small></span></button>}
               <div className="command-menu-separator" />
               <button className="command-menu-danger" type="button" role="menuitem" onClick={onLogout}><LogOut size={16} /><span><strong>Sign out</strong></span></button>
             </div>}
@@ -2207,7 +2258,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                         </div>
                         <ExternalLink className="external" size={17} />
                       </a>
-                      <CardManagementStatus service={service} state={updateState} job={updateJob} manageMode={manageMode} onUpdate={(item) => void startManagedUpdate(item)} />
+                      <CardManagementStatus service={service} state={updateState} job={updateJob} manageMode={manageMode} canUpdate={canRunUpdates} onUpdate={(item) => void startManagedUpdate(item)} />
                       {manageMode && (
                         <div className="card-controls">
                           <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : service.favorite ? "Pinned cards reorder with other pinned cards" : "Drag to reorder with services and widgets"} aria-hidden="true"><GripVertical size={15} /></span>
@@ -2238,6 +2289,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
         <SettingsModal
           settings={dashboardSettings}
           account={accountSummary}
+          permissions={auth.permissions ?? []}
+          users={users}
           extensions={extensions}
           registry={extensionRegistry}
           registryLoading={extensionRegistryLoading}
@@ -2251,6 +2304,10 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           onSave={saveSettings}
           onChangePassword={changeAccountPassword}
           onRegenerateRecoveryCode={regenerateAccountRecoveryCode}
+          onCreateUser={createLocalUser}
+          onUpdateUser={updateLocalUser}
+          onResetUserPassword={resetLocalUserPassword}
+          onDeleteUser={deleteLocalUser}
           onOpenAppearance={() => { setAppearanceError(""); setAppearanceOpen(true); }}
           onOpenConnections={() => { setConnectionsOpen(true); void loadConnections(); }}
           onAddWidget={() => setEditingWidget(null)}
@@ -2272,6 +2329,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           jobs={updateJobs}
           busy={updateBusy}
           catalogEntries={catalogEntries}
+          canRunUpdates={canRunUpdates}
           onClose={() => setUpdatesOpen(false)}
           onCheck={() => void checkForUpdates()}
           onUpdate={(service) => void startManagedUpdate(service)}
@@ -2311,6 +2369,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           allServices={services}
           connections={connections}
           catalogEntries={catalogEntries}
+          canManageSecrets={canManageSecrets}
           onClose={closeEditor}
           onSaved={() => { closeEditor(); void loadServices(); void loadStructure(); void loadConnections(); void refreshTelemetry(); void loadUpdateData(); }}
           onDeleted={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}

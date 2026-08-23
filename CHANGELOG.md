@@ -4,6 +4,27 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.18.0] - 2026-08-23
+
+### Added
+- Local multi-user accounts with Owner, Admin, Editor, and Viewer roles.
+- Permission-aware API enforcement for dashboard editing, service management, credentials, updates, connections, extensions, global settings, and user management.
+- Settings → Users for creating, enabling/disabling, role-changing, password-resetting, and deleting local accounts.
+- Per-user password recovery codes and account-security history.
+- Host-side `list-users` and username-targeted emergency password reset commands.
+- Backend RBAC tests covering owner migration, role boundaries, disabled-session invalidation, and sensitive service configuration.
+
+### Changed
+- Existing single-administrator installations migrate automatically to an Owner account and preserve valid sessions.
+- Editors can manage dashboard structure and ordinary service-card metadata but cannot configure saved credentials or update-management providers.
+- Viewers receive a read-only dashboard; update status/history remains visible while update actions are hidden.
+- Admins can manage dashboard configuration, secrets, updates, connections, extensions, and global settings but cannot manage user accounts.
+
+### Security
+- Role checks are enforced server-side; hiding controls in the browser is only a usability layer.
+- Disabling a user or resetting their password immediately invalidates all of that user's active sessions.
+- The final enabled Owner account cannot be disabled, demoted, or deleted.
+
 ## [0.17.0] - 2026-08-23
 
 ### Added

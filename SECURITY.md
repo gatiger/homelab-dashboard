@@ -46,3 +46,9 @@ Page-template exports exclude service API keys, saved usernames/passwords, manag
 ## Extension registry
 
 v0.17 registry indexes are fetched over HTTPS. Package paths must remain on the same HTTPS origin as the configured registry index, and every package is verified against the SHA-256 digest published in that index before its manifest is parsed or installed. Registry metadata is not a substitute for a code-signing system: compromise of the registry origin could replace both a package and its checksum. For that reason, the current runtime still accepts data-only manifests with a narrow permission allow-list and does not execute third-party code. Package signing/transparency are future hardening areas before executable extensions are considered.
+
+## v0.18 local users and role enforcement
+
+v0.18 introduces Owner, Admin, Editor, and Viewer roles backed by explicit server-side permissions. Browser-hidden controls are only a usability feature; protected API routes verify the required permission independently. Sensitive service edits also enforce a separate `secrets:manage` capability so Editor accounts cannot alter saved API keys, saved usernames/passwords, management Connections, or update-provider bindings through crafted API requests.
+
+Disabling an account or resetting its password invalidates that account's active sessions immediately. The application prevents removal, disablement, or demotion of the last enabled Owner. Recovery codes remain per-user high-entropy secrets stored only as digests, and Owners cannot retrieve another user's readable recovery code.

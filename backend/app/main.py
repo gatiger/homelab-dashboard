@@ -47,7 +47,7 @@ EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TI
 EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.17.0"
+APP_VERSION = "0.18.0"
 app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION)
 
 # Vite development origin. Production traffic is same-origin through nginx.
@@ -60,10 +60,33 @@ app.add_middleware(
 )
 
 
+UserRole = Literal["owner", "admin", "editor", "viewer"]
+
+ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "owner": {
+        "dashboard:view", "dashboard:edit", "services:manage", "secrets:manage",
+        "updates:run", "connections:manage", "extensions:manage", "settings:manage",
+        "users:manage",
+    },
+    "admin": {
+        "dashboard:view", "dashboard:edit", "services:manage", "secrets:manage",
+        "updates:run", "connections:manage", "extensions:manage", "settings:manage",
+    },
+    "editor": {"dashboard:view", "dashboard:edit", "services:manage"},
+    "viewer": {"dashboard:view"},
+}
+
+
+def permissions_for_role(role: str) -> list[str]:
+    return sorted(ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS["viewer"]))
+
+
 class AuthStatus(BaseModel):
     setup_required: bool
     authenticated: bool
     username: str | None = None
+    role: UserRole | None = None
+    permissions: list[str] = Field(default_factory=list)
     csrf_token: str | None = None
     # Returned only when a new one-time recovery code has just been created.
     recovery_code: str | None = None
@@ -116,10 +139,45 @@ class AccountAuditEvent(BaseModel):
 
 class AccountSummary(BaseModel):
     username: str
+    role: UserRole
     recovery_configured: bool
     recovery_generated_at: str | None = None
     password_changed_at: str | None = None
     recent_events: list[AccountAuditEvent] = Field(default_factory=list)
+
+
+class UserSummary(BaseModel):
+    id: int
+    username: str
+    role: UserRole
+    enabled: bool
+    recovery_configured: bool
+    password_changed_at: str | None = None
+    last_login_at: str | None = None
+    created_at: str
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=10, max_length=256)
+    role: UserRole = "viewer"
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Username is required")
+        return value
+
+
+class UserUpdate(BaseModel):
+    role: UserRole
+    enabled: bool = True
+
+
+class UserPasswordReset(BaseModel):
+    new_password: str = Field(min_length=10, max_length=256)
 
 
 # Service type identifiers are intentionally open-ended. The frontend ships a
@@ -1075,8 +1133,13 @@ INTEGRATIONS: dict[str, IntegrationDescriptor] = {
 class SessionUser(BaseModel):
     user_id: int
     username: str
+    role: UserRole
+    permissions: list[str] = Field(default_factory=list)
     csrf_token: str
     token_hash: str
+
+    def can(self, permission: str) -> bool:
+        return permission in self.permissions
 
 
 def utcnow() -> datetime:
@@ -1241,6 +1304,49 @@ def ensure_account_migrations(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE admin_users ADD COLUMN password_changed_at TEXT")
 
 
+def ensure_multi_user_migration(connection: sqlite3.Connection) -> None:
+    """Migrate the legacy single-administrator auth store without invalidating sessions."""
+    if connection.execute("SELECT 1 FROM app_settings WHERE key = 'auth_v18_migrated'").fetchone():
+        return
+    legacy_user = connection.execute(
+        "SELECT id, username, password_hash, recovery_code_hash, recovery_generated_at, password_changed_at, created_at FROM admin_users ORDER BY id LIMIT 1"
+    ).fetchone()
+    existing_users = int(connection.execute("SELECT COUNT(*) FROM dashboard_users").fetchone()[0])
+    if existing_users == 0 and legacy_user:
+        connection.execute(
+            """INSERT INTO dashboard_users
+               (id, username, password_hash, role, enabled, recovery_code_hash, recovery_generated_at, password_changed_at, created_at)
+               VALUES (?, ?, ?, 'owner', 1, ?, ?, ?, ?)""",
+            (
+                legacy_user["id"],
+                legacy_user["username"],
+                legacy_user["password_hash"],
+                legacy_user["recovery_code_hash"],
+                legacy_user["recovery_generated_at"],
+                legacy_user["password_changed_at"],
+                legacy_user["created_at"],
+            ),
+        )
+
+    # Preserve any still-valid browser sessions from v0.17 and earlier.
+    if int(connection.execute("SELECT COUNT(*) FROM dashboard_sessions").fetchone()[0]) == 0:
+        legacy_sessions = connection.execute(
+            "SELECT token_hash, user_id, csrf_token, expires_at, created_at FROM sessions"
+        ).fetchall()
+        for row in legacy_sessions:
+            if connection.execute("SELECT 1 FROM dashboard_users WHERE id = ?", (row["user_id"],)).fetchone():
+                connection.execute(
+                    """INSERT OR IGNORE INTO dashboard_sessions
+                       (token_hash, user_id, csrf_token, expires_at, created_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (row["token_hash"], row["user_id"], row["csrf_token"], row["expires_at"], row["created_at"]),
+                )
+    connection.execute(
+        "INSERT INTO app_settings (key, value) VALUES ('auth_v18_migrated', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (iso_now(),),
+    )
+
+
 def init_db() -> None:
     with db() as connection:
         connection.executescript(
@@ -1273,6 +1379,28 @@ def init_db() -> None:
                 expires_at TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES admin_users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS dashboard_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'viewer',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                recovery_code_hash TEXT,
+                recovery_generated_at TEXT,
+                password_changed_at TEXT,
+                last_login_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS dashboard_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                csrf_token TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES dashboard_users(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS dashboard_pages (
@@ -1397,6 +1525,7 @@ def init_db() -> None:
             """
         )
         ensure_account_migrations(connection)
+        ensure_multi_user_migration(connection)
         ensure_service_migrations(connection)
         category_columns = {row["name"] for row in connection.execute("PRAGMA table_info(category_layouts)").fetchall()}
         if "icon" not in category_columns:
@@ -1409,6 +1538,7 @@ def init_db() -> None:
         ensure_category_layouts(connection)
         now = iso_now()
         connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+        connection.execute("DELETE FROM dashboard_sessions WHERE expires_at <= ?", (now,))
         connection.execute("UPDATE update_jobs SET state = 'failed', progress = 100, message = 'Interrupted by dashboard restart', finished_at = ? WHERE state IN ('queued', 'running')", (now,))
 
 
@@ -1518,7 +1648,7 @@ def rotate_recovery_code(connection: sqlite3.Connection, user_id: int) -> Recove
     code = generate_recovery_code()
     generated_at = iso_now()
     connection.execute(
-        "UPDATE admin_users SET recovery_code_hash = ?, recovery_generated_at = ? WHERE id = ?",
+        "UPDATE dashboard_users SET recovery_code_hash = ?, recovery_generated_at = ? WHERE id = ?",
         (recovery_code_digest(code), generated_at, user_id),
     )
     return RecoveryCodeResult(recovery_code=code, generated_at=generated_at)
@@ -1537,7 +1667,7 @@ def token_digest(token: str) -> str:
 
 def admin_exists() -> bool:
     with db() as connection:
-        return connection.execute("SELECT 1 FROM admin_users LIMIT 1").fetchone() is not None
+        return connection.execute("SELECT 1 FROM dashboard_users LIMIT 1").fetchone() is not None
 
 
 def create_session(connection: sqlite3.Connection, user_id: int) -> tuple[str, str]:
@@ -1546,7 +1676,7 @@ def create_session(connection: sqlite3.Connection, user_id: int) -> tuple[str, s
     now = utcnow()
     expires = now + timedelta(hours=SESSION_HOURS)
     connection.execute(
-        "INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO dashboard_sessions (token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
         (token_digest(token), user_id, csrf_token, expires.isoformat(), now.isoformat()),
     )
     return token, csrf_token
@@ -1570,19 +1700,29 @@ def get_session(session_token: str | None) -> SessionUser | None:
     with db() as connection:
         row = connection.execute(
             """
-            SELECT u.id AS user_id, u.username, s.token_hash, s.csrf_token, s.expires_at
-            FROM sessions s
-            JOIN admin_users u ON u.id = s.user_id
+            SELECT u.id AS user_id, u.username, u.role, u.enabled, s.token_hash, s.csrf_token, s.expires_at
+            FROM dashboard_sessions s
+            JOIN dashboard_users u ON u.id = s.user_id
             WHERE s.token_hash = ?
             """,
             (token_digest(session_token),),
         ).fetchone()
-        if not row:
+        if not row or not bool(row["enabled"]):
+            if row:
+                connection.execute("DELETE FROM dashboard_sessions WHERE token_hash = ?", (token_digest(session_token),))
             return None
         if datetime.fromisoformat(row["expires_at"]) <= utcnow():
-            connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_digest(session_token),))
+            connection.execute("DELETE FROM dashboard_sessions WHERE token_hash = ?", (token_digest(session_token),))
             return None
-        return SessionUser(user_id=int(row["user_id"]), username=row["username"], csrf_token=row["csrf_token"], token_hash=row["token_hash"])
+        role = row["role"] if row["role"] in ROLE_PERMISSIONS else "viewer"
+        return SessionUser(
+            user_id=int(row["user_id"]),
+            username=row["username"],
+            role=role,
+            permissions=permissions_for_role(role),
+            csrf_token=row["csrf_token"],
+            token_hash=row["token_hash"],
+        )
 
 
 def require_auth(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> SessionUser:
@@ -1599,6 +1739,33 @@ def require_write_auth(
     if not x_csrf_token or not hmac.compare_digest(x_csrf_token, user.csrf_token):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     return user
+
+
+def read_permission_dependency(permission: str):
+    def check(user: SessionUser = Depends(require_auth)) -> SessionUser:
+        if not user.can(permission):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Permission required: {permission}")
+        return user
+    return check
+
+
+def permission_dependency(permission: str):
+    def check(user: SessionUser = Depends(require_write_auth)) -> SessionUser:
+        if not user.can(permission):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Permission required: {permission}")
+        return user
+    return check
+
+
+require_connections_read = read_permission_dependency("connections:manage")
+require_users_read = read_permission_dependency("users:manage")
+require_dashboard_edit = permission_dependency("dashboard:edit")
+require_services_manage = permission_dependency("services:manage")
+require_updates_run = permission_dependency("updates:run")
+require_connections_manage = permission_dependency("connections:manage")
+require_extensions_manage = permission_dependency("extensions:manage")
+require_settings_manage = permission_dependency("settings:manage")
+require_users_manage = permission_dependency("users:manage")
 
 
 def row_to_service(row: sqlite3.Row) -> Service:
@@ -2827,7 +2994,7 @@ def list_management_connections(_: SessionUser = Depends(require_auth)) -> list[
 
 
 @app.post("/api/connections", response_model=ManagementConnection, status_code=status.HTTP_201_CREATED)
-def create_management_connection(payload: ManagementConnectionCreate, _: SessionUser = Depends(require_write_auth)) -> ManagementConnection:
+def create_management_connection(payload: ManagementConnectionCreate, _: SessionUser = Depends(require_connections_manage)) -> ManagementConnection:
     now = iso_now()
     try:
         with db() as connection:
@@ -2843,7 +3010,7 @@ def create_management_connection(payload: ManagementConnectionCreate, _: Session
 
 
 @app.put("/api/connections/{connection_id}", response_model=ManagementConnection)
-def update_management_connection(connection_id: int, payload: ManagementConnectionUpdate, _: SessionUser = Depends(require_write_auth)) -> ManagementConnection:
+def update_management_connection(connection_id: int, payload: ManagementConnectionUpdate, _: SessionUser = Depends(require_connections_manage)) -> ManagementConnection:
     now = iso_now()
     try:
         with db() as connection:
@@ -2872,7 +3039,7 @@ def update_management_connection(connection_id: int, payload: ManagementConnecti
 
 
 @app.delete("/api/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_management_connection(connection_id: int, _: SessionUser = Depends(require_write_auth)) -> Response:
+def delete_management_connection(connection_id: int, _: SessionUser = Depends(require_connections_manage)) -> Response:
     with db() as connection:
         row = connection.execute("SELECT 1 FROM management_connections WHERE id = ?", (connection_id,)).fetchone()
         if not row:
@@ -2885,7 +3052,7 @@ def delete_management_connection(connection_id: int, _: SessionUser = Depends(re
 
 
 @app.post("/api/connections/{connection_id}/test", response_model=ConnectionTestResult)
-def test_management_connection(connection_id: int, _: SessionUser = Depends(require_write_auth)) -> ConnectionTestResult:
+def test_management_connection(connection_id: int, _: SessionUser = Depends(require_connections_manage)) -> ConnectionTestResult:
     try:
         row = get_management_connection_row(connection_id)
         with truenas_client_from_connection_row(row) as client:
@@ -2897,7 +3064,7 @@ def test_management_connection(connection_id: int, _: SessionUser = Depends(requ
 
 
 @app.get("/api/management/docker/resources", response_model=list[ManagedResource])
-def docker_management_resources(_: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
+def docker_management_resources(_: SessionUser = Depends(require_connections_read)) -> list[ManagedResource]:
     try:
         raw = agent_request("/v1/resources", timeout=30)
     except Exception as exc:
@@ -2920,7 +3087,7 @@ def truenas_resources_from_apps(apps: list[dict]) -> list[ManagedResource]:
 
 
 @app.get("/api/management/truenas/connections/{connection_id}/apps", response_model=list[ManagedResource])
-def truenas_management_connection_apps(connection_id: int, _: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
+def truenas_management_connection_apps(connection_id: int, _: SessionUser = Depends(require_connections_read)) -> list[ManagedResource]:
     try:
         connection_row = get_management_connection_row(connection_id)
         apps = truenas_app_records(connection_row=connection_row)
@@ -2930,7 +3097,7 @@ def truenas_management_connection_apps(connection_id: int, _: SessionUser = Depe
 
 
 @app.get("/api/management/truenas/{controller_service_id}/apps", response_model=list[ManagedResource])
-def truenas_management_apps(controller_service_id: int, _: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
+def truenas_management_apps(controller_service_id: int, _: SessionUser = Depends(require_connections_read)) -> list[ManagedResource]:
     # Backward-compatible v0.11 route. New configurations use management connections.
     try:
         controller_row = get_service_row(controller_service_id)
@@ -2960,7 +3127,7 @@ def update_statuses(_: SessionUser = Depends(require_auth)) -> list[ServiceUpdat
 
 
 @app.post("/api/updates/check", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
-def start_update_check(_: SessionUser = Depends(require_write_auth)) -> UpdateJob:
+def start_update_check(_: SessionUser = Depends(require_updates_run)) -> UpdateJob:
     with db() as connection:
         active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
     if active:
@@ -2971,7 +3138,7 @@ def start_update_check(_: SessionUser = Depends(require_write_auth)) -> UpdateJo
 
 
 @app.post("/api/services/{service_id}/update", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
-def start_service_update(service_id: int, _: SessionUser = Depends(require_write_auth)) -> UpdateJob:
+def start_service_update(service_id: int, _: SessionUser = Depends(require_updates_run)) -> UpdateJob:
     try:
         row = get_service_row(service_id)
     except RuntimeError as exc:
@@ -2989,7 +3156,7 @@ def start_service_update(service_id: int, _: SessionUser = Depends(require_write
 
 
 @app.post("/api/updates/update-all", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
-def start_update_all(_: SessionUser = Depends(require_write_auth)) -> UpdateJob:
+def start_update_all(_: SessionUser = Depends(require_updates_run)) -> UpdateJob:
     with db() as connection:
         active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
     if active:
@@ -3034,6 +3201,8 @@ def auth_status(session_token: str | None = Cookie(default=None, alias=SESSION_C
         setup_required=setup_required,
         authenticated=user is not None,
         username=user.username if user else None,
+        role=user.role if user else None,
+        permissions=user.permissions if user else [],
         csrf_token=user.csrf_token if user else None,
     )
 
@@ -3041,34 +3210,54 @@ def auth_status(session_token: str | None = Cookie(default=None, alias=SESSION_C
 @app.post("/api/auth/setup", response_model=AuthStatus, status_code=status.HTTP_201_CREATED)
 def setup_admin(credentials: Credentials, response: Response) -> AuthStatus:
     with db() as connection:
-        if connection.execute("SELECT 1 FROM admin_users LIMIT 1").fetchone():
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Administrator is already configured")
+        if connection.execute("SELECT 1 FROM dashboard_users LIMIT 1").fetchone():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Owner account is already configured")
         now = iso_now()
         cursor = connection.execute(
-            "INSERT INTO admin_users (id, username, password_hash, password_changed_at, created_at) VALUES (1, ?, ?, ?, ?)",
-            (credentials.username, hash_password(credentials.password), now, now),
+            """INSERT INTO dashboard_users
+               (username, password_hash, role, enabled, password_changed_at, last_login_at, created_at)
+               VALUES (?, ?, 'owner', 1, ?, ?, ?)""",
+            (credentials.username, hash_password(credentials.password), now, now, now),
         )
-        user_id = cursor.lastrowid or 1
+        user_id = int(cursor.lastrowid)
         recovery = rotate_recovery_code(connection, user_id)
-        audit_account_event(connection, user_id, credentials.username, "account_created", "Administrator account created")
+        audit_account_event(connection, user_id, credentials.username, "account_created", "Owner account created")
         audit_account_event(connection, user_id, credentials.username, "recovery_code_generated", "Initial recovery code generated")
         token, csrf = create_session(connection, user_id)
     set_session_cookie(response, token)
-    return AuthStatus(setup_required=False, authenticated=True, username=credentials.username, csrf_token=csrf, recovery_code=recovery.recovery_code)
+    return AuthStatus(
+        setup_required=False,
+        authenticated=True,
+        username=credentials.username,
+        role="owner",
+        permissions=permissions_for_role("owner"),
+        csrf_token=csrf,
+        recovery_code=recovery.recovery_code,
+    )
 
 
 @app.post("/api/auth/login", response_model=AuthStatus)
 def login(credentials: Credentials, response: Response) -> AuthStatus:
     with db() as connection:
         user = connection.execute(
-            "SELECT id, username, password_hash FROM admin_users WHERE username = ? COLLATE NOCASE",
+            "SELECT id, username, password_hash, role, enabled FROM dashboard_users WHERE username = ? COLLATE NOCASE",
             (credentials.username,),
         ).fetchone()
-        if not user or not verify_password(credentials.password, user["password_hash"]):
+        if not user or not bool(user["enabled"]) or not verify_password(credentials.password, user["password_hash"]):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+        role = user["role"] if user["role"] in ROLE_PERMISSIONS else "viewer"
+        now = iso_now()
+        connection.execute("UPDATE dashboard_users SET last_login_at = ? WHERE id = ?", (now, user["id"]))
         token, csrf = create_session(connection, user["id"])
     set_session_cookie(response, token)
-    return AuthStatus(setup_required=False, authenticated=True, username=user["username"], csrf_token=csrf)
+    return AuthStatus(
+        setup_required=False,
+        authenticated=True,
+        username=user["username"],
+        role=role,
+        permissions=permissions_for_role(role),
+        csrf_token=csrf,
+    )
 
 
 @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -3078,7 +3267,7 @@ def logout(
 ) -> Response:
     if session_token:
         with db() as connection:
-            connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_digest(session_token),))
+            connection.execute("DELETE FROM dashboard_sessions WHERE token_hash = ?", (token_digest(session_token),))
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
@@ -3090,32 +3279,41 @@ def recover_password(payload: PasswordRecoveryRequest, response: Response) -> Au
     # Use one generic failure response so the endpoint does not confirm usernames.
     with db() as connection:
         user = connection.execute(
-            "SELECT id, username, recovery_code_hash FROM admin_users WHERE username = ? COLLATE NOCASE",
+            "SELECT id, username, role, enabled, recovery_code_hash FROM dashboard_users WHERE username = ? COLLATE NOCASE",
             (payload.username,),
         ).fetchone()
         supplied_digest = recovery_code_digest(payload.recovery_code)
-        valid = bool(user and user["recovery_code_hash"] and hmac.compare_digest(supplied_digest, user["recovery_code_hash"]))
+        valid = bool(user and bool(user["enabled"]) and user["recovery_code_hash"] and hmac.compare_digest(supplied_digest, user["recovery_code_hash"]))
         if not valid:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or recovery code")
         now = iso_now()
         connection.execute(
-            "UPDATE admin_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+            "UPDATE dashboard_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
             (hash_password(payload.new_password), now, user["id"]),
         )
-        connection.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+        connection.execute("DELETE FROM dashboard_sessions WHERE user_id = ?", (user["id"],))
         recovery = rotate_recovery_code(connection, int(user["id"]))
         audit_account_event(connection, int(user["id"]), user["username"], "password_recovered", "Password reset using recovery code")
         audit_account_event(connection, int(user["id"]), user["username"], "recovery_code_rotated", "Recovery code rotated after use")
         token, csrf = create_session(connection, int(user["id"]))
     set_session_cookie(response, token)
-    return AuthStatus(setup_required=False, authenticated=True, username=user["username"], csrf_token=csrf, recovery_code=recovery.recovery_code)
+    role = user["role"] if user["role"] in ROLE_PERMISSIONS else "viewer"
+    return AuthStatus(
+        setup_required=False,
+        authenticated=True,
+        username=user["username"],
+        role=role,
+        permissions=permissions_for_role(role),
+        csrf_token=csrf,
+        recovery_code=recovery.recovery_code,
+    )
 
 
 @app.get("/api/account", response_model=AccountSummary)
 def get_account(user: SessionUser = Depends(require_auth)) -> AccountSummary:
     with db() as connection:
         row = connection.execute(
-            "SELECT username, recovery_code_hash, recovery_generated_at, password_changed_at FROM admin_users WHERE id = ?",
+            "SELECT username, role, recovery_code_hash, recovery_generated_at, password_changed_at FROM dashboard_users WHERE id = ?",
             (user.user_id,),
         ).fetchone()
         if not row:
@@ -3126,6 +3324,7 @@ def get_account(user: SessionUser = Depends(require_auth)) -> AccountSummary:
         ).fetchall()
     return AccountSummary(
         username=row["username"],
+        role=row["role"] if row["role"] in ROLE_PERMISSIONS else "viewer",
         recovery_configured=bool(row["recovery_code_hash"]),
         recovery_generated_at=row["recovery_generated_at"],
         password_changed_at=row["password_changed_at"],
@@ -3136,15 +3335,15 @@ def get_account(user: SessionUser = Depends(require_auth)) -> AccountSummary:
 @app.post("/api/account/change-password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(payload: PasswordChangeRequest, user: SessionUser = Depends(require_write_auth)) -> Response:
     with db() as connection:
-        row = connection.execute("SELECT password_hash FROM admin_users WHERE id = ?", (user.user_id,)).fetchone()
+        row = connection.execute("SELECT password_hash FROM dashboard_users WHERE id = ?", (user.user_id,)).fetchone()
         if not row or not verify_password(payload.current_password, row["password_hash"]):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
         connection.execute(
-            "UPDATE admin_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+            "UPDATE dashboard_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
             (hash_password(payload.new_password), iso_now(), user.user_id),
         )
         # Keep the browser that performed the change signed in, but invalidate all other sessions.
-        connection.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (user.user_id, user.token_hash))
+        connection.execute("DELETE FROM dashboard_sessions WHERE user_id = ? AND token_hash != ?", (user.user_id, user.token_hash))
         audit_account_event(connection, user.user_id, user.username, "password_changed", "Password changed from Settings; other sessions invalidated")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -3152,12 +3351,110 @@ def change_password(payload: PasswordChangeRequest, user: SessionUser = Depends(
 @app.post("/api/account/recovery-code", response_model=RecoveryCodeResult)
 def regenerate_recovery_code(payload: RecoveryCodeRequest, user: SessionUser = Depends(require_write_auth)) -> RecoveryCodeResult:
     with db() as connection:
-        row = connection.execute("SELECT password_hash FROM admin_users WHERE id = ?", (user.user_id,)).fetchone()
+        row = connection.execute("SELECT password_hash FROM dashboard_users WHERE id = ?", (user.user_id,)).fetchone()
         if not row or not verify_password(payload.current_password, row["password_hash"]):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
         result = rotate_recovery_code(connection, user.user_id)
         audit_account_event(connection, user.user_id, user.username, "recovery_code_generated", "Recovery code generated from Settings; previous code invalidated")
     return result
+
+
+def row_to_user_summary(row: sqlite3.Row) -> UserSummary:
+    role = row["role"] if row["role"] in ROLE_PERMISSIONS else "viewer"
+    return UserSummary(
+        id=int(row["id"]),
+        username=row["username"],
+        role=role,
+        enabled=bool(row["enabled"]),
+        recovery_configured=bool(row["recovery_code_hash"]),
+        password_changed_at=row["password_changed_at"],
+        last_login_at=row["last_login_at"],
+        created_at=row["created_at"],
+    )
+
+
+def enabled_owner_count(connection: sqlite3.Connection) -> int:
+    return int(connection.execute(
+        "SELECT COUNT(*) FROM dashboard_users WHERE role = 'owner' AND enabled = 1"
+    ).fetchone()[0])
+
+
+@app.get("/api/users", response_model=list[UserSummary])
+def list_users(_: SessionUser = Depends(require_users_read)) -> list[UserSummary]:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT * FROM dashboard_users ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'editor' THEN 2 ELSE 3 END, username COLLATE NOCASE"
+        ).fetchall()
+    return [row_to_user_summary(row) for row in rows]
+
+
+@app.post("/api/users", response_model=UserSummary, status_code=status.HTTP_201_CREATED)
+def create_user(payload: UserCreate, actor: SessionUser = Depends(require_users_manage)) -> UserSummary:
+    with db() as connection:
+        if connection.execute("SELECT 1 FROM dashboard_users WHERE username = ? COLLATE NOCASE", (payload.username,)).fetchone():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+        now = iso_now()
+        cursor = connection.execute(
+            """INSERT INTO dashboard_users
+               (username, password_hash, role, enabled, password_changed_at, created_at)
+               VALUES (?, ?, ?, 1, ?, ?)""",
+            (payload.username, hash_password(payload.password), payload.role, now, now),
+        )
+        user_id = int(cursor.lastrowid)
+        audit_account_event(connection, user_id, payload.username, "account_created", f"Local account created by {actor.username} with role {payload.role}")
+        row = connection.execute("SELECT * FROM dashboard_users WHERE id = ?", (user_id,)).fetchone()
+    return row_to_user_summary(row)
+
+
+@app.put("/api/users/{user_id}", response_model=UserSummary)
+def update_user(user_id: int, payload: UserUpdate, actor: SessionUser = Depends(require_users_manage)) -> UserSummary:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM dashboard_users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        removing_last_owner = row["role"] == "owner" and bool(row["enabled"]) and (payload.role != "owner" or not payload.enabled)
+        if removing_last_owner and enabled_owner_count(connection) <= 1:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="At least one enabled owner account is required")
+        if user_id == actor.user_id and not payload.enabled:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You cannot disable your own account")
+        if user_id == actor.user_id and payload.role != row["role"]:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another owner must change your role")
+        connection.execute("UPDATE dashboard_users SET role = ?, enabled = ? WHERE id = ?", (payload.role, int(payload.enabled), user_id))
+        if not payload.enabled:
+            connection.execute("DELETE FROM dashboard_sessions WHERE user_id = ?", (user_id,))
+        audit_account_event(connection, user_id, row["username"], "account_updated", f"Role/enabled state changed by {actor.username}: role={payload.role}, enabled={payload.enabled}")
+        updated = connection.execute("SELECT * FROM dashboard_users WHERE id = ?", (user_id,)).fetchone()
+    return row_to_user_summary(updated)
+
+
+@app.post("/api/users/{user_id}/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+def reset_user_password(user_id: int, payload: UserPasswordReset, actor: SessionUser = Depends(require_users_manage)) -> Response:
+    with db() as connection:
+        row = connection.execute("SELECT id, username FROM dashboard_users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        connection.execute(
+            "UPDATE dashboard_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+            (hash_password(payload.new_password), iso_now(), user_id),
+        )
+        connection.execute("DELETE FROM dashboard_sessions WHERE user_id = ?", (user_id,))
+        audit_account_event(connection, user_id, row["username"], "password_reset_by_owner", f"Password reset by {actor.username}; all sessions invalidated")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.delete("/api/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user(user_id: int, actor: SessionUser = Depends(require_users_manage)) -> Response:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM dashboard_users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        if user_id == actor.user_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You cannot delete your own account")
+        if row["role"] == "owner" and bool(row["enabled"]) and enabled_owner_count(connection) <= 1:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="At least one enabled owner account is required")
+        connection.execute("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
+        audit_account_event(connection, None, row["username"], "account_deleted", f"Local account deleted by {actor.username}")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/appearance", response_model=AppearanceSettings)
@@ -3173,7 +3470,7 @@ def get_appearance(_: SessionUser = Depends(require_auth)) -> AppearanceSettings
 
 
 @app.put("/api/appearance", response_model=AppearanceSettings)
-def update_appearance(payload: AppearanceUpdate, _: SessionUser = Depends(require_write_auth)) -> AppearanceSettings:
+def update_appearance(payload: AppearanceUpdate, _: SessionUser = Depends(require_settings_manage)) -> AppearanceSettings:
     with db() as connection:
         if not theme_exists(connection, payload.theme_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Theme not found")
@@ -3186,7 +3483,7 @@ def update_appearance(payload: AppearanceUpdate, _: SessionUser = Depends(requir
 
 
 @app.post("/api/themes", response_model=AppearanceSettings, status_code=status.HTTP_201_CREATED)
-def import_theme(payload: ThemePackage, _: SessionUser = Depends(require_write_auth)) -> AppearanceSettings:
+def import_theme(payload: ThemePackage, _: SessionUser = Depends(require_settings_manage)) -> AppearanceSettings:
     now = iso_now()
     with db() as connection:
         if connection.execute("SELECT 1 FROM custom_themes WHERE id = ?", (payload.id,)).fetchone():
@@ -3202,7 +3499,7 @@ def import_theme(payload: ThemePackage, _: SessionUser = Depends(require_write_a
 
 
 @app.delete("/api/themes/{theme_id}", response_model=AppearanceSettings)
-def delete_theme(theme_id: str, _: SessionUser = Depends(require_write_auth)) -> AppearanceSettings:
+def delete_theme(theme_id: str, _: SessionUser = Depends(require_settings_manage)) -> AppearanceSettings:
     theme_id = theme_id.strip().lower()
     if theme_id in BUILTIN_THEME_IDS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Built-in themes cannot be deleted")
@@ -3228,7 +3525,7 @@ def get_dashboard_settings(_: SessionUser = Depends(require_auth)) -> DashboardS
 
 
 @app.put("/api/settings", response_model=DashboardSettings)
-def update_dashboard_settings(payload: DashboardSettings, _: SessionUser = Depends(require_write_auth)) -> DashboardSettings:
+def update_dashboard_settings(payload: DashboardSettings, _: SessionUser = Depends(require_settings_manage)) -> DashboardSettings:
     with db() as connection:
         save_dashboard_settings(connection, payload)
         return read_dashboard_settings(connection)
@@ -3244,7 +3541,7 @@ def list_widgets(_: SessionUser = Depends(require_auth)) -> list[DashboardWidget
 
 
 @app.post("/api/widgets", response_model=DashboardWidget, status_code=status.HTTP_201_CREATED)
-def create_widget(payload: DashboardWidgetCreate, _: SessionUser = Depends(require_write_auth)) -> DashboardWidget:
+def create_widget(payload: DashboardWidgetCreate, _: SessionUser = Depends(require_dashboard_edit)) -> DashboardWidget:
     now = iso_now()
     with db() as connection:
         require_page(connection, payload.page_id)
@@ -3268,7 +3565,7 @@ def create_widget(payload: DashboardWidgetCreate, _: SessionUser = Depends(requi
 
 
 @app.put("/api/widgets/{widget_id}", response_model=DashboardWidget)
-def update_widget(widget_id: int, payload: DashboardWidgetUpdate, _: SessionUser = Depends(require_write_auth)) -> DashboardWidget:
+def update_widget(widget_id: int, payload: DashboardWidgetUpdate, _: SessionUser = Depends(require_dashboard_edit)) -> DashboardWidget:
     with db() as connection:
         current = connection.execute("SELECT page_id, category, sort_order FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone()
         if not current:
@@ -3289,7 +3586,7 @@ def update_widget(widget_id: int, payload: DashboardWidgetUpdate, _: SessionUser
 
 
 @app.patch("/api/widgets/{widget_id}/layout", response_model=DashboardWidget)
-def update_widget_layout(widget_id: int, payload: WidgetLayoutUpdate, _: SessionUser = Depends(require_write_auth)) -> DashboardWidget:
+def update_widget_layout(widget_id: int, payload: WidgetLayoutUpdate, _: SessionUser = Depends(require_dashboard_edit)) -> DashboardWidget:
     with db() as connection:
         row = connection.execute("SELECT * FROM dashboard_widgets WHERE id = ?", (widget_id,)).fetchone()
         if not row:
@@ -3303,7 +3600,7 @@ def update_widget_layout(widget_id: int, payload: WidgetLayoutUpdate, _: Session
 
 
 @app.post("/api/widgets/reorder", response_model=list[DashboardWidget])
-def reorder_widgets(payload: WidgetReorder, _: SessionUser = Depends(require_write_auth)) -> list[DashboardWidget]:
+def reorder_widgets(payload: WidgetReorder, _: SessionUser = Depends(require_dashboard_edit)) -> list[DashboardWidget]:
     if len(payload.ordered_ids) != len(set(payload.ordered_ids)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate widget ids in reorder request")
     with db() as connection:
@@ -3323,7 +3620,7 @@ def reorder_widgets(payload: WidgetReorder, _: SessionUser = Depends(require_wri
 
 
 @app.delete("/api/widgets/{widget_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_widget(widget_id: int, _: SessionUser = Depends(require_write_auth)) -> Response:
+def delete_widget(widget_id: int, _: SessionUser = Depends(require_dashboard_edit)) -> Response:
     with db() as connection:
         cursor = connection.execute("DELETE FROM dashboard_widgets WHERE id = ?", (widget_id,))
         if cursor.rowcount == 0:
@@ -3578,7 +3875,7 @@ def get_extension_registry(refresh: bool = False, _: SessionUser = Depends(requi
 
 
 @app.post("/api/extensions/registry/{extension_id}/install", response_model=ExtensionDescriptor)
-def install_registry_extension(extension_id: str, payload: ExtensionRegistryInstallRequest, _: SessionUser = Depends(require_write_auth)) -> ExtensionDescriptor:
+def install_registry_extension(extension_id: str, payload: ExtensionRegistryInstallRequest, _: SessionUser = Depends(require_extensions_manage)) -> ExtensionDescriptor:
     registry = load_extension_registry(refresh=True)
     entry = next((item for item in registry.entries if item.id == extension_id), None)
     if not entry:
@@ -3645,7 +3942,7 @@ def list_extensions(_: SessionUser = Depends(require_auth)) -> list[ExtensionDes
 
 
 @app.post("/api/extensions/import", response_model=ExtensionDescriptor, status_code=status.HTTP_201_CREATED)
-def import_extension(payload: ExtensionPackage, _: SessionUser = Depends(require_write_auth)) -> ExtensionDescriptor:
+def import_extension(payload: ExtensionPackage, _: SessionUser = Depends(require_extensions_manage)) -> ExtensionDescriptor:
     validate_extension_package_content(payload)
     now = iso_now()
     with db() as connection:
@@ -3659,7 +3956,7 @@ def import_extension(payload: ExtensionPackage, _: SessionUser = Depends(require
 
 
 @app.patch("/api/extensions/{extension_id}", response_model=ExtensionDescriptor)
-def set_extension_state(extension_id: str, payload: ExtensionStateUpdate, _: SessionUser = Depends(require_write_auth)) -> ExtensionDescriptor:
+def set_extension_state(extension_id: str, payload: ExtensionStateUpdate, _: SessionUser = Depends(require_extensions_manage)) -> ExtensionDescriptor:
     with db() as connection:
         row = connection.execute("SELECT * FROM installed_extensions WHERE id = ?", (extension_id,)).fetchone()
         if not row:
@@ -3670,7 +3967,7 @@ def set_extension_state(extension_id: str, payload: ExtensionStateUpdate, _: Ses
 
 
 @app.delete("/api/extensions/{extension_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_extension(extension_id: str, _: SessionUser = Depends(require_write_auth)) -> Response:
+def remove_extension(extension_id: str, _: SessionUser = Depends(require_extensions_manage)) -> Response:
     with db() as connection:
         cursor = connection.execute("DELETE FROM installed_extensions WHERE id = ?", (extension_id,))
         if cursor.rowcount == 0:
@@ -3725,7 +4022,7 @@ def resolve_page_template(connection: sqlite3.Connection, extension_id: str, tem
 
 
 @app.post("/api/page-templates/{extension_id}/{template_id}/instantiate", response_model=DashboardPage, status_code=status.HTTP_201_CREATED)
-def instantiate_page_template(extension_id: str, template_id: str, payload: PageCloneRequest, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+def instantiate_page_template(extension_id: str, template_id: str, payload: PageCloneRequest, _: SessionUser = Depends(require_dashboard_edit)) -> DashboardPage:
     with db() as connection:
         template = resolve_page_template(connection, extension_id, template_id)
         return create_page_from_template(connection, template, payload.name)
@@ -3778,7 +4075,7 @@ def export_dashboard_structure(_: SessionUser = Depends(require_auth)) -> dict[s
 
 
 @app.post("/api/dashboard/import", response_model=list[DashboardPage])
-def import_dashboard_structure(payload: dict[str, object], _: SessionUser = Depends(require_write_auth)) -> list[DashboardPage]:
+def import_dashboard_structure(payload: dict[str, object], _: SessionUser = Depends(require_dashboard_edit)) -> list[DashboardPage]:
     if payload.get("format") != "homelab-dashboard-layout" or payload.get("schema_version") != 1 or not isinstance(payload.get("pages"), list):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported dashboard layout file")
     now = iso_now()
@@ -3843,7 +4140,7 @@ def list_pages(_: SessionUser = Depends(require_auth)) -> list[DashboardPage]:
 
 
 @app.post("/api/pages", response_model=DashboardPage, status_code=status.HTTP_201_CREATED)
-def create_page(payload: DashboardPageCreate, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+def create_page(payload: DashboardPageCreate, _: SessionUser = Depends(require_dashboard_edit)) -> DashboardPage:
     now = iso_now()
     with db() as connection:
         sort_order = int(connection.execute(
@@ -3861,7 +4158,7 @@ def create_page(payload: DashboardPageCreate, _: SessionUser = Depends(require_w
 
 
 @app.put("/api/pages/{page_id}", response_model=DashboardPage)
-def update_page(page_id: int, payload: DashboardPageUpdate, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+def update_page(page_id: int, payload: DashboardPageUpdate, _: SessionUser = Depends(require_dashboard_edit)) -> DashboardPage:
     with db() as connection:
         require_page(connection, page_id)
         try:
@@ -3876,7 +4173,7 @@ def update_page(page_id: int, payload: DashboardPageUpdate, _: SessionUser = Dep
 
 
 @app.post("/api/pages/{page_id}/clone", response_model=DashboardPage, status_code=status.HTTP_201_CREATED)
-def clone_page(page_id: int, payload: PageCloneRequest, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+def clone_page(page_id: int, payload: PageCloneRequest, _: SessionUser = Depends(require_dashboard_edit)) -> DashboardPage:
     now = iso_now()
     with db() as connection:
         require_page(connection, page_id)
@@ -3901,7 +4198,7 @@ def clone_page(page_id: int, payload: PageCloneRequest, _: SessionUser = Depends
 
 
 @app.post("/api/pages/reorder", response_model=list[DashboardPage])
-def reorder_pages(payload: PageReorder, _: SessionUser = Depends(require_write_auth)) -> list[DashboardPage]:
+def reorder_pages(payload: PageReorder, _: SessionUser = Depends(require_dashboard_edit)) -> list[DashboardPage]:
     if len(payload.ordered_ids) != len(set(payload.ordered_ids)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate page ids in reorder request")
     with db() as connection:
@@ -3919,7 +4216,7 @@ def reorder_pages(payload: PageReorder, _: SessionUser = Depends(require_write_a
 
 
 @app.delete("/api/pages/{page_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_page(page_id: int, _: SessionUser = Depends(require_write_auth)) -> Response:
+def delete_page(page_id: int, _: SessionUser = Depends(require_dashboard_edit)) -> Response:
     with db() as connection:
         page = require_page(connection, page_id)
         if page["is_default"]:
@@ -3954,7 +4251,7 @@ def list_categories(_: SessionUser = Depends(require_auth)) -> list[CategoryLayo
 
 
 @app.put("/api/categories/configure", response_model=CategoryLayout)
-def configure_category(payload: CategoryUpdate, _: SessionUser = Depends(require_write_auth)) -> CategoryLayout:
+def configure_category(payload: CategoryUpdate, _: SessionUser = Depends(require_dashboard_edit)) -> CategoryLayout:
     with db() as connection:
         require_page(connection, payload.page_id)
         ensure_category_layout(connection, payload.page_id, payload.old_name)
@@ -3983,7 +4280,7 @@ def configure_category(payload: CategoryUpdate, _: SessionUser = Depends(require
 
 
 @app.patch("/api/categories/state", response_model=CategoryLayout)
-def update_category_state(payload: CategoryStateUpdate, _: SessionUser = Depends(require_write_auth)) -> CategoryLayout:
+def update_category_state(payload: CategoryStateUpdate, _: SessionUser = Depends(require_dashboard_edit)) -> CategoryLayout:
     with db() as connection:
         require_page(connection, payload.page_id)
         ensure_category_layout(connection, payload.page_id, payload.name)
@@ -3999,7 +4296,7 @@ def update_category_state(payload: CategoryStateUpdate, _: SessionUser = Depends
 
 
 @app.post("/api/categories/reorder", response_model=list[CategoryLayout])
-def reorder_categories(payload: CategoryReorder, _: SessionUser = Depends(require_write_auth)) -> list[CategoryLayout]:
+def reorder_categories(payload: CategoryReorder, _: SessionUser = Depends(require_dashboard_edit)) -> list[CategoryLayout]:
     if len(payload.ordered_names) != len(set(name.casefold() for name in payload.ordered_names)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate category names in reorder request")
     with db() as connection:
@@ -4107,7 +4404,13 @@ def service_insights(_: SessionUser = Depends(require_auth)) -> list[ServiceInsi
 
 
 @app.post("/api/services", response_model=Service, status_code=status.HTTP_201_CREATED)
-def create_service(service: ServiceCreate, _: SessionUser = Depends(require_write_auth)) -> Service:
+def create_service(service: ServiceCreate, user: SessionUser = Depends(require_services_manage)) -> Service:
+    if not user.can("secrets:manage") and (
+        service.api_key or service.auth_username or service.auth_password or service.clear_api_key
+        or service.clear_auth_credentials or service.management_provider != "none"
+        or service.management_target or service.management_controller_service_id or service.management_connection_id
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Editors cannot configure credentials or management providers")
     now = iso_now()
     with db() as connection:
         require_page(connection, service.page_id)
@@ -4145,12 +4448,23 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
 
 
 @app.put("/api/services/{service_id}", response_model=Service)
-def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Depends(require_write_auth)) -> Service:
+def update_service(service_id: int, service: ServiceUpdate, user: SessionUser = Depends(require_services_manage)) -> Service:
     now = iso_now()
     with db() as connection:
         current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id FROM services WHERE id = ?", (service_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+        if not user.can("secrets:manage"):
+            sensitive_change = bool(
+                service.api_key or service.auth_username or service.auth_password
+                or service.clear_api_key or service.clear_auth_credentials
+                or service.management_provider != current["management_provider"]
+                or service.management_target != current["management_target"]
+                or service.management_controller_service_id != current["management_controller_service_id"]
+                or service.management_connection_id != current["management_connection_id"]
+            )
+            if sensitive_change:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Editors cannot change credentials or management providers")
         require_page(connection, service.page_id)
         ensure_category_layout(connection, service.page_id, service.category)
         api_key_encrypted = current["api_key_encrypted"]
@@ -4210,7 +4524,7 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
 
 
 @app.patch("/api/services/{service_id}/layout", response_model=Service)
-def update_service_layout(service_id: int, layout: ServiceLayoutUpdate, _: SessionUser = Depends(require_write_auth)) -> Service:
+def update_service_layout(service_id: int, layout: ServiceLayoutUpdate, _: SessionUser = Depends(require_dashboard_edit)) -> Service:
     updates: list[str] = []
     values: list[object] = []
     if layout.favorite is not None:
@@ -4234,7 +4548,7 @@ def update_service_layout(service_id: int, layout: ServiceLayoutUpdate, _: Sessi
 
 
 @app.post("/api/services/reorder", response_model=list[Service])
-def reorder_services(payload: ServiceReorder, _: SessionUser = Depends(require_write_auth)) -> list[Service]:
+def reorder_services(payload: ServiceReorder, _: SessionUser = Depends(require_dashboard_edit)) -> list[Service]:
     if len(payload.ordered_ids) != len(set(payload.ordered_ids)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate service ids in reorder request")
     with db() as connection:
@@ -4261,7 +4575,7 @@ def reorder_services(payload: ServiceReorder, _: SessionUser = Depends(require_w
 
 
 @app.post("/api/dashboard-items/reorder")
-def reorder_dashboard_items(payload: DashboardItemReorder, _: SessionUser = Depends(require_write_auth)) -> dict[str, bool]:
+def reorder_dashboard_items(payload: DashboardItemReorder, _: SessionUser = Depends(require_dashboard_edit)) -> dict[str, bool]:
     keys = [(item.kind, item.id) for item in payload.ordered_items]
     if len(keys) != len(set(keys)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate dashboard items in reorder request")
@@ -4279,7 +4593,7 @@ def reorder_dashboard_items(payload: DashboardItemReorder, _: SessionUser = Depe
 
 
 @app.delete("/api/services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_service(service_id: int, _: SessionUser = Depends(require_write_auth)) -> Response:
+def delete_service(service_id: int, _: SessionUser = Depends(require_services_manage)) -> Response:
     with db() as connection:
         cursor = connection.execute("DELETE FROM services WHERE id = ?", (service_id,))
         if cursor.rowcount == 0:

@@ -14,7 +14,7 @@ Dockge is a convenient Compose UI, but it is not required by Homelab Dashboard.
 2. Paste the repository's `compose.yaml` into the stack editor.
 3. If port 8080 is already in use, change `${DASHBOARD_PORT:-8080}` to another host port or add `DASHBOARD_PORT` in the stack environment.
 4. Start the stack.
-5. Open `http://SERVER-IP:PORT` and create the first administrator account.
+5. Open `http://SERVER-IP:PORT` and create the first Owner account.
 
 Because the production Compose file uses the published GHCR image, Dockge no longer needs the repository's `backend` or `frontend` source folders.
 

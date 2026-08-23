@@ -1,5 +1,5 @@
 import React, { FormEvent, useEffect, useRef, useState } from "react";
-import { Cable, Copy, Download, Gauge, Info, KeyRound, LayoutGrid, Monitor, Palette, Puzzle, RefreshCw, Save, Settings, ShieldCheck, Upload, X } from "lucide-react";
+import { Cable, Copy, Download, Gauge, Info, KeyRound, LayoutGrid, Monitor, Palette, Puzzle, RefreshCw, Save, Settings, ShieldCheck, Upload, UserPlus, Users, X } from "lucide-react";
 
 export type DashboardSettings = {
   dashboard_title: string;
@@ -66,6 +66,7 @@ export type AccountAuditEvent = {
 
 export type AccountSummary = {
   username: string;
+  role: "owner" | "admin" | "editor" | "viewer";
   recovery_configured: boolean;
   recovery_generated_at?: string | null;
   password_changed_at?: string | null;
@@ -77,17 +78,30 @@ export type RecoveryCodeResult = {
   generated_at: string;
 };
 
-type ConnectionSummary = { id: number; name: string; type: string; used_by: number };
-type Tab = "general" | "account" | "dashboard" | "appearance" | "connections" | "monitoring" | "extensions" | "about";
 
-const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: "general", label: "General", icon: <Settings size={16} /> },
+export type UserSummary = {
+  id: number;
+  username: string;
+  role: "owner" | "admin" | "editor" | "viewer";
+  enabled: boolean;
+  recovery_configured: boolean;
+  password_changed_at?: string | null;
+  last_login_at?: string | null;
+  created_at: string;
+};
+
+type ConnectionSummary = { id: number; name: string; type: string; used_by: number };
+type Tab = "general" | "account" | "users" | "dashboard" | "appearance" | "connections" | "monitoring" | "extensions" | "about";
+
+const ALL_TABS: { id: Tab; label: string; icon: React.ReactNode; permission?: string }[] = [
+  { id: "general", label: "General", icon: <Settings size={16} />, permission: "settings:manage" },
   { id: "account", label: "Account", icon: <ShieldCheck size={16} /> },
-  { id: "dashboard", label: "Dashboard", icon: <LayoutGrid size={16} /> },
-  { id: "appearance", label: "Appearance", icon: <Palette size={16} /> },
-  { id: "connections", label: "Connections", icon: <Cable size={16} /> },
-  { id: "monitoring", label: "Monitoring", icon: <Gauge size={16} /> },
-  { id: "extensions", label: "Extensions", icon: <Puzzle size={16} /> },
+  { id: "users", label: "Users", icon: <Users size={16} />, permission: "users:manage" },
+  { id: "dashboard", label: "Dashboard", icon: <LayoutGrid size={16} />, permission: "dashboard:edit" },
+  { id: "appearance", label: "Appearance", icon: <Palette size={16} />, permission: "settings:manage" },
+  { id: "connections", label: "Connections", icon: <Cable size={16} />, permission: "connections:manage" },
+  { id: "monitoring", label: "Monitoring", icon: <Gauge size={16} />, permission: "settings:manage" },
+  { id: "extensions", label: "Extensions", icon: <Puzzle size={16} />, permission: "extensions:manage" },
   { id: "about", label: "About", icon: <Info size={16} /> },
 ];
 
@@ -101,9 +115,75 @@ function eventLabel(event: string): string {
   return event.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function UserAdminRow({
+  user,
+  currentUsername,
+  onUpdate,
+  onResetPassword,
+  onDelete,
+  onError,
+  onSaved,
+}: {
+  user: UserSummary;
+  currentUsername: string;
+  onUpdate: (user: UserSummary, role: UserSummary["role"], enabled: boolean) => Promise<void>;
+  onResetPassword: (user: UserSummary, password: string) => Promise<void>;
+  onDelete: (user: UserSummary) => Promise<void>;
+  onError: (message: string) => void;
+  onSaved: (message: string) => void;
+}) {
+  const [role, setRole] = useState<UserSummary["role"]>(user.role);
+  const [enabled, setEnabled] = useState(user.enabled);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setRole(user.role); setEnabled(user.enabled); }, [user.role, user.enabled]);
+
+  async function saveUser() {
+    setBusy(true); onError(""); onSaved("");
+    try { await onUpdate(user, role, enabled); onSaved(`${user.username} updated.`); }
+    catch (err) { onError(err instanceof Error ? err.message : "Unable to update user."); }
+    finally { setBusy(false); }
+  }
+
+  async function resetPassword() {
+    if (password.length < 10) { onError("Reset password must be at least 10 characters."); return; }
+    setBusy(true); onError(""); onSaved("");
+    try {
+      await onResetPassword(user, password);
+      setPassword(""); setResetOpen(false);
+      onSaved(`${user.username}'s password was reset and their active sessions were signed out.`);
+    } catch (err) { onError(err instanceof Error ? err.message : "Unable to reset password."); }
+    finally { setBusy(false); }
+  }
+
+  async function removeUser() {
+    if (!window.confirm(`Delete local user "${user.username}"?`)) return;
+    setBusy(true); onError(""); onSaved("");
+    try { await onDelete(user); onSaved(`${user.username} deleted.`); }
+    catch (err) { onError(err instanceof Error ? err.message : "Unable to delete user."); }
+    finally { setBusy(false); }
+  }
+
+  const isSelf = user.username.toLowerCase() === currentUsername.toLowerCase();
+  return <div className={`user-admin-row ${!user.enabled ? "user-disabled" : ""}`}>
+    <div className="user-admin-heading"><span><strong>{user.username}</strong><small>{user.enabled ? "Enabled" : "Disabled"} · last login {formatWhen(user.last_login_at)}</small></span><em>{user.recovery_configured ? "Recovery configured" : "No recovery code"}</em></div>
+    <div className="user-admin-controls">
+      <label><span>Role</span><select value={role} disabled={isSelf} title={isSelf ? "Another owner must change your role" : undefined} onChange={(event) => setRole(event.target.value as UserSummary["role"])}><option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option><option value="owner">Owner</option></select></label>
+      <label className="check-row"><input type="checkbox" checked={enabled} disabled={isSelf} onChange={(event) => setEnabled(event.target.checked)} /><span>Enabled</span></label>
+      <button className="secondary compact-button" type="button" disabled={busy} onClick={() => void saveUser()}>Save</button>
+      <button className="secondary compact-button" type="button" disabled={busy || isSelf} title={isSelf ? "Use the Account tab to change your own password" : "Reset this user's password"} onClick={() => setResetOpen((value) => !value)}>Reset password</button>
+      <button className="danger-button compact-button" type="button" disabled={busy || isSelf} onClick={() => void removeUser()}>Delete</button>
+    </div>
+    {resetOpen && <div className="user-reset-row"><input type="password" value={password} minLength={10} placeholder="New password" onChange={(event) => setPassword(event.target.value)} /><button className="primary compact-button" type="button" disabled={busy} onClick={() => void resetPassword()}>Set new password</button></div>}
+  </div>;
+}
+
 export function SettingsModal({
   settings,
   account,
+  permissions,
+  users,
   extensions,
   registry,
   registryLoading,
@@ -117,6 +197,10 @@ export function SettingsModal({
   onSave,
   onChangePassword,
   onRegenerateRecoveryCode,
+  onCreateUser,
+  onUpdateUser,
+  onResetUserPassword,
+  onDeleteUser,
   onOpenAppearance,
   onOpenConnections,
   onAddWidget,
@@ -131,6 +215,8 @@ export function SettingsModal({
 }: {
   settings: DashboardSettings;
   account: AccountSummary | null;
+  permissions: string[];
+  users: UserSummary[];
   extensions: ExtensionDescriptor[];
   registry: ExtensionRegistryResponse | null;
   registryLoading: boolean;
@@ -144,6 +230,10 @@ export function SettingsModal({
   onSave: (settings: DashboardSettings) => Promise<void>;
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   onRegenerateRecoveryCode: (currentPassword: string) => Promise<RecoveryCodeResult>;
+  onCreateUser: (username: string, password: string, role: UserSummary["role"]) => Promise<void>;
+  onUpdateUser: (user: UserSummary, role: UserSummary["role"], enabled: boolean) => Promise<void>;
+  onResetUserPassword: (user: UserSummary, password: string) => Promise<void>;
+  onDeleteUser: (user: UserSummary) => Promise<void>;
   onOpenAppearance: () => void;
   onOpenConnections: () => void;
   onAddWidget: () => void;
@@ -156,7 +246,7 @@ export function SettingsModal({
   onRefreshRegistry: () => Promise<void>;
   onInstallRegistryExtension: (entry: ExtensionRegistryItem) => Promise<void>;
 }) {
-  const [tab, setTab] = useState<Tab>("general");
+  const [tab, setTab] = useState<Tab>(() => permissions.includes("settings:manage") ? "general" : "account");
   const [form, setForm] = useState(settings);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -167,8 +257,15 @@ export function SettingsModal({
   const [recoveryPassword, setRecoveryPassword] = useState("");
   const [newRecoveryCode, setNewRecoveryCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState<UserSummary["role"]>("viewer");
   const extensionInputRef = useRef<HTMLInputElement | null>(null);
+  const tabs = ALL_TABS.filter((item) => !item.permission || permissions.includes(item.permission));
   useEffect(() => setForm(settings), [settings]);
+  useEffect(() => {
+    if (!tabs.some((item) => item.id === tab)) setTab("account");
+  }, [permissions, tab]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -209,6 +306,18 @@ export function SettingsModal({
     catch { setError("Could not copy automatically. Select and copy the recovery code manually."); }
   }
 
+  async function createLocalUser(event: FormEvent) {
+    event.preventDefault(); setError(""); setSaved("");
+    if (newUserPassword.length < 10) { setError("Password must be at least 10 characters."); return; }
+    setBusy(true);
+    try {
+      await onCreateUser(newUsername, newUserPassword, newUserRole);
+      setNewUsername(""); setNewUserPassword(""); setNewUserRole("viewer");
+      setSaved("User created.");
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to create user."); }
+    finally { setBusy(false); }
+  }
+
   const openSub = (callback: () => void) => { onClose(); callback(); };
 
   return (
@@ -216,7 +325,7 @@ export function SettingsModal({
       <section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header className="modal-header"><div><p className="eyebrow">SETTINGS</p><h2 id="settings-title">Homelab Dashboard</h2><p className="modal-subhead">Account security, dashboard behavior, appearance, connections, monitoring, and extensions.</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
         <div className="settings-layout">
-          <nav className="settings-nav" aria-label="Settings sections">{TABS.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} type="button" onClick={() => { setTab(item.id); setError(""); setSaved(""); }}>{item.icon}<span>{item.label}</span></button>)}</nav>
+          <nav className="settings-nav" aria-label="Settings sections">{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} type="button" onClick={() => { setTab(item.id); setError(""); setSaved(""); }}>{item.icon}<span>{item.label}</span></button>)}</nav>
           <div className="settings-content">
             {(tab === "general" || tab === "monitoring") && <form className="settings-form" onSubmit={save}>
               {tab === "general" ? <>
@@ -236,8 +345,8 @@ export function SettingsModal({
             </form>}
 
             {tab === "account" && <div className="settings-panel">
-              <div className="settings-heading"><ShieldCheck size={19} /><div><h3>Account & recovery</h3><p>Protect the local administrator account and keep a recovery path that does not depend on email.</p></div></div>
-              <div className="settings-summary-row"><span>Administrator</span><strong>{account?.username ?? "Loading…"}</strong></div>
+              <div className="settings-heading"><ShieldCheck size={19} /><div><h3>Account & recovery</h3><p>Protect your local account and keep a recovery path that does not depend on email.</p></div></div>
+              <div className="settings-summary-row"><span>Signed in as</span><strong>{account?.username ?? "Loading…"} · {account?.role ?? ""}</strong></div>
               <div className="settings-summary-row"><span>Password last changed</span><strong>{formatWhen(account?.password_changed_at)}</strong></div>
               <div className="settings-summary-row"><span>Recovery code</span><strong className={account?.recovery_configured ? "security-good" : "security-attention"}>{account?.recovery_configured ? "Configured" : "Not configured"}</strong></div>
 
@@ -265,6 +374,27 @@ export function SettingsModal({
               <div className="settings-callout"><strong>Emergency host recovery</strong><span>If both the password and recovery code are lost, a person with shell access to the dashboard host can run the documented emergency reset command.</span></div>
             </div>}
 
+            {tab === "users" && <div className="settings-panel">
+              <div className="settings-heading"><Users size={19} /><div><h3>Users & roles</h3><p>Create local accounts and control what each person can change.</p></div></div>
+              <div className="role-guide">
+                <div><strong>Owner</strong><span>Everything, including user management.</span></div>
+                <div><strong>Admin</strong><span>Dashboard, credentials, connections, extensions and updates; no user management.</span></div>
+                <div><strong>Editor</strong><span>Pages, widgets and basic service cards; cannot manage secrets or updates.</span></div>
+                <div><strong>Viewer</strong><span>Read-only dashboard access.</span></div>
+              </div>
+              <form className="security-section" onSubmit={createLocalUser}>
+                <div className="settings-heading"><UserPlus size={18} /><div><h3>Add local user</h3><p>The new user can create their own recovery code from Account settings after signing in.</p></div></div>
+                <label><span>Username</span><input value={newUsername} minLength={3} maxLength={64} onChange={(event) => setNewUsername(event.target.value)} required /></label>
+                <label><span>Initial password</span><input type="password" value={newUserPassword} minLength={10} onChange={(event) => setNewUserPassword(event.target.value)} required /></label>
+                <label><span>Role</span><select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as UserSummary["role"])}><option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option><option value="owner">Owner</option></select></label>
+                <div><button className="primary" type="submit" disabled={busy}><UserPlus size={16} /> Add user</button></div>
+              </form>
+              <div className="user-admin-list">
+                {users.map((user) => <UserAdminRow key={user.id} user={user} currentUsername={account?.username ?? ""} onUpdate={onUpdateUser} onResetPassword={onResetUserPassword} onDelete={onDeleteUser} onError={setError} onSaved={setSaved} />)}
+              </div>
+              {error && <div className="notice compact">{error}</div>}{saved && <div className="connection-success">{saved}</div>}
+            </div>}
+
             {tab === "dashboard" && <div className="settings-panel"><div className="settings-heading"><LayoutGrid size={19} /><div><h3>Dashboard builder</h3><p>Move your layout between installations or keep a reusable structure file. Exported layout files intentionally exclude passwords, API keys, and controller credentials.</p></div></div><div className="builder-action-grid"><button className="secondary" type="button" onClick={onExportDashboard}><Download size={16} /> Export layout</button><button className="secondary" type="button" onClick={onImportDashboard}><Upload size={16} /> Import layout</button></div><div className="settings-callout"><strong>Safe layout export</strong><span>Pages, categories, service card definitions, and widgets are included. Secrets and management links are not.</span></div></div>}
 
             {tab === "appearance" && <div className="settings-panel"><div className="settings-heading"><Palette size={19} /><div><h3>Appearance</h3><p>Theme selection, visual theme editing, and community theme packages.</p></div></div><div className="settings-summary-row"><span>Current theme</span><strong>{currentTheme}</strong></div><div className="settings-summary-row"><span>Imported themes</span><strong>{importedThemeCount}</strong></div><button className="primary" type="button" onClick={() => openSub(onOpenAppearance)}>Manage appearance</button></div>}
@@ -278,7 +408,7 @@ export function SettingsModal({
                 <button className="secondary" type="button" disabled={registryLoading} onClick={() => void onRefreshRegistry().catch(() => undefined)}><RefreshCw size={16} className={registryLoading ? "spin" : ""} /> {registryLoading ? "Checking…" : "Check registry"}</button>
                 <input ref={extensionInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; setError(""); void onImportExtension(file).catch((err) => setError(err instanceof Error ? err.message : "Unable to import extension.")); }} />
               </div>
-              <div className="settings-callout"><strong>Safe extension boundary</strong><span>v0.17 registry packages are still data-only. Registry installs are checksum-verified and permission declarations must match exactly; packages still cannot execute code, access Docker, read credentials, make arbitrary network requests, or access the host filesystem.</span></div>
+              <div className="settings-callout"><strong>Safe extension boundary</strong><span>v0.18 registry packages are still data-only. Registry installs are checksum-verified and permission declarations must match exactly; packages still cannot execute code, access Docker, read credentials, make arbitrary network requests, or access the host filesystem.</span></div>
               {error && <div className="notice compact">{error}</div>}
               {registryError && <div className="notice compact">Registry unavailable: {registryError}. Manual JSON import remains available.</div>}
               {registry && <div className="registry-section">
@@ -316,7 +446,7 @@ export function SettingsModal({
               })}</div>
             </div>}
 
-            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.17 adds a checksum-verified extension registry, trust labels, compatibility checks, and in-place data-extension updates while keeping executable third-party code disabled.</small></div></div>}
+            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.18 adds local multi-user accounts, Owner/Admin/Editor/Viewer roles, permission-aware controls, and session invalidation for disabled or reset accounts.</small></div></div>}
           </div>
         </div>
       </section>
