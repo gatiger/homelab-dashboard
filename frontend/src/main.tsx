@@ -27,7 +27,7 @@ import {
   X,
 } from "lucide-react";
 import "./styles.css";
-import { CATALOG_BY_TYPE, CATALOG_CATEGORIES, SERVICE_CATALOG, catalogSearchText, urlPlaceholder, type CatalogEntry } from "./serviceCatalog";
+import { SERVICE_CATALOG, catalogSearchText, urlPlaceholder, type CatalogEntry } from "./serviceCatalog";
 import { BUILTIN_THEMES, BUILTIN_THEME_BY_ID, THEME_TEMPLATE, applyTheme, resolveTheme, type ThemePackage } from "./themes";
 import { WidgetCard, WidgetModal, type DashboardWidget } from "./widgets";
 import { SettingsModal, type AccountSummary, type DashboardSettings, type ExtensionDescriptor, type RecoveryCodeResult } from "./settings";
@@ -94,6 +94,15 @@ type DashboardPage = {
   is_default: boolean;
   created_at: string;
   updated_at: string;
+};
+
+type PageTemplateDescriptor = {
+  extension_id: string;
+  template_id: string;
+  name: string;
+  description: string;
+  author: string;
+  source: "built_in" | "imported";
 };
 
 type CategoryLayout = {
@@ -199,7 +208,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.15.0";
+const APP_VERSION = "0.16.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -451,17 +460,18 @@ function CatalogLogo({ entry, fallback }: { entry?: CatalogEntry | null; fallbac
   );
 }
 
-function ServiceCatalogModal({ onClose, onSelect }: { onClose: () => void; onSelect: (entry: CatalogEntry) => void }) {
+function ServiceCatalogModal({ catalogEntries, onClose, onSelect }: { catalogEntries: CatalogEntry[]; onClose: () => void; onSelect: (entry: CatalogEntry) => void }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
 
+  const categories = useMemo(() => ["All", ...Array.from(new Set(catalogEntries.map((entry) => entry.category)))], [catalogEntries]);
   const entries = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return SERVICE_CATALOG.filter((entry) => {
+    return catalogEntries.filter((entry) => {
       if (category !== "All" && entry.category !== category) return false;
       return !needle || catalogSearchText(entry).includes(needle);
     });
-  }, [query, category]);
+  }, [catalogEntries, query, category]);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
@@ -482,7 +492,7 @@ function ServiceCatalogModal({ onClose, onSelect }: { onClose: () => void; onSel
         </div>
 
         <div className="catalog-categories" aria-label="Service categories">
-          {CATALOG_CATEGORIES.map((item) => (
+          {categories.map((item) => (
             <button key={item} className={category === item ? "active" : ""} type="button" onClick={() => setCategory(item)}>{item}</button>
           ))}
         </div>
@@ -524,6 +534,7 @@ function ServiceModal({
   defaultPageId,
   allServices,
   connections,
+  catalogEntries,
 }: {
   service: Service | null;
   template?: CatalogEntry | null;
@@ -535,8 +546,10 @@ function ServiceModal({
   defaultPageId: number;
   allServices: Service[];
   connections: ManagementConnection[];
+  catalogEntries: CatalogEntry[];
 }) {
-  const initialTemplate = template ?? (service ? CATALOG_BY_TYPE[service.type] : null);
+  const catalogByType = useMemo(() => Object.fromEntries(catalogEntries.map((entry) => [entry.type, entry])) as Record<string, CatalogEntry>, [catalogEntries]);
+  const initialTemplate = template ?? (service ? catalogByType[service.type] : null);
   const [form, setForm] = useState<ServiceForm>(service ? {
     name: service.name,
     type: service.type,
@@ -585,7 +598,7 @@ function ServiceModal({
   const [managedResources, setManagedResources] = useState<ManagedResource[]>([]);
   const [resourceLoading, setResourceLoading] = useState(false);
   const [resourceError, setResourceError] = useState("");
-  const selectedCatalogEntry = CATALOG_BY_TYPE[form.type];
+  const selectedCatalogEntry = catalogByType[form.type];
   // allServices is retained for compatibility with existing editor behavior; management controllers now use Connections.
   void allServices;
 
@@ -617,11 +630,11 @@ function ServiceModal({
   }
 
   function changeType(value: string) {
-    const entry = CATALOG_BY_TYPE[value];
+    const entry = catalogByType[value];
     setForm((current) => ({
       ...current,
       type: value,
-      category: entry && (!service || current.category === (CATALOG_BY_TYPE[current.type]?.category ?? current.category))
+      category: entry && (!service || current.category === (catalogByType[current.type]?.category ?? current.category))
         ? (entry.category === "Custom" ? "General" : entry.category)
         : current.category,
     }));
@@ -684,7 +697,7 @@ function ServiceModal({
           <label>
             <span>Service template</span>
             <select value={form.type} onChange={(event) => changeType(event.target.value)}>
-              {SERVICE_CATALOG.map((entry) => <option key={entry.type} value={entry.type}>{entry.name}</option>)}
+              {!catalogByType[form.type] && <option value={form.type}>{form.type}</option>}{catalogEntries.map((entry) => <option key={entry.type} value={entry.type}>{entry.name}</option>)}
             </select>
           </label>
           <label className="span-2">
@@ -874,6 +887,7 @@ function ServiceModal({
 function PageModal({
   page,
   itemCount,
+  templates,
   onClose,
   onSaved,
   onDeleted,
@@ -881,12 +895,14 @@ function PageModal({
 }: {
   page: DashboardPage | null;
   itemCount: number;
+  templates: PageTemplateDescriptor[];
   onClose: () => void;
   onSaved: (page: DashboardPage) => void;
   onDeleted: () => void;
   csrfToken?: string | null;
 }) {
   const [name, setName] = useState(page?.name ?? "");
+  const [templateKey, setTemplateKey] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -895,7 +911,11 @@ function PageModal({
     setBusy(true);
     setError("");
     try {
-      const saved = await api<DashboardPage>(page ? `/api/pages/${page.id}` : "/api/pages", {
+      const [extensionId, templateId] = templateKey ? templateKey.split("::", 2) : ["", ""];
+      const path = page ? `/api/pages/${page.id}` : templateKey
+        ? `/api/page-templates/${encodeURIComponent(extensionId)}/${encodeURIComponent(templateId)}/instantiate`
+        : "/api/pages";
+      const saved = await api<DashboardPage>(path, {
         method: page ? "PUT" : "POST",
         body: JSON.stringify({ name }),
       }, csrfToken);
@@ -936,6 +956,20 @@ function PageModal({
     }
   }
 
+  async function exportTemplate() {
+    if (!page) return;
+    setError("");
+    try {
+      const pack = await api<Record<string, unknown>>(`/api/pages/${page.id}/template-package`);
+      const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${page.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "page"}-template.json`;
+      document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to export page template."); }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
       <section className="modal page-modal" role="dialog" aria-modal="true" aria-labelledby="page-modal-title">
@@ -948,6 +982,14 @@ function PageModal({
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button>
         </header>
         <form className="page-form" onSubmit={save}>
+          {!page && templates.length > 0 && <label>
+            <span>Start from</span>
+            <select value={templateKey} onChange={(event) => { const value = event.target.value; setTemplateKey(value); const selected = templates.find((item) => `${item.extension_id}::${item.template_id}` === value); if (selected && !name.trim()) setName(selected.name); }}>
+              <option value="">Blank page</option>
+              {templates.map((item) => <option key={`${item.extension_id}:${item.template_id}`} value={`${item.extension_id}::${item.template_id}`}>{item.name} — {item.author}</option>)}
+            </select>
+            {templateKey && <small>{templates.find((item) => `${item.extension_id}::${item.template_id}` === templateKey)?.description}</small>}
+          </label>}
           <label>
             <span>Page name</span>
             <input value={name} onChange={(event) => setName(event.target.value)} maxLength={60} placeholder="Infrastructure" required autoFocus />
@@ -956,7 +998,7 @@ function PageModal({
           {page && !page.is_default && itemCount > 0 && <small>Move or remove the {itemCount} item{itemCount === 1 ? "" : "s"} on this page before deleting it.</small>}
           {error && <div className="notice compact">{error}</div>}
           <div className="modal-actions">
-            {page && <button className="secondary" disabled={busy} type="button" onClick={() => void clonePage()}><LayoutGrid size={16} /> Clone page</button>}
+            {page && <button className="secondary" disabled={busy} type="button" onClick={() => void clonePage()}><LayoutGrid size={16} /> Clone page</button>}{page && <button className="secondary" disabled={busy} type="button" onClick={() => void exportTemplate()}><Download size={16} /> Export template</button>}
             {page && !page.is_default && (
               <button className="danger-button" disabled={busy || itemCount > 0} type="button" onClick={() => void remove()}>
                 <Trash2 size={16} /> Delete page
@@ -1158,12 +1200,13 @@ function AppearanceModal({
   );
 }
 
-function inferredServiceType(service: Service): string | null {
-  if (CATALOG_BY_TYPE[service.type]?.icon) return service.type;
+function inferredServiceType(service: Service, catalogEntries: CatalogEntry[]): string | null {
+  const catalogByType = Object.fromEntries(catalogEntries.map((entry) => [entry.type, entry])) as Record<string, CatalogEntry>;
+  if (catalogByType[service.type]?.icon) return service.type;
   if (!["link", "other"].includes(service.type)) return service.type;
 
   const haystack = `${service.name} ${service.url}`.toLowerCase();
-  for (const entry of SERVICE_CATALOG) {
+  for (const entry of catalogEntries) {
     if (!entry.icon || ["link", "other"].includes(entry.type)) continue;
     const candidates = [entry.name.toLowerCase(), entry.type.toLowerCase(), ...(entry.aliases ?? []).map((alias) => alias.toLowerCase())]
       .filter((candidate) => candidate.length >= 4);
@@ -1261,6 +1304,7 @@ function UpdateManagerModal({
   states,
   jobs,
   busy,
+  catalogEntries,
   onClose,
   onCheck,
   onUpdate,
@@ -1270,6 +1314,7 @@ function UpdateManagerModal({
   states: Record<number, ServiceUpdateState>;
   jobs: UpdateJob[];
   busy: boolean;
+  catalogEntries: CatalogEntry[];
   onClose: () => void;
   onCheck: () => void;
   onUpdate: (service: Service) => void;
@@ -1310,7 +1355,7 @@ function UpdateManagerModal({
             return (
               <div className="update-row" key={service.id}>
                 <div className="update-row-main">
-                  <div className="update-row-title"><ServiceIcon service={service} /><div><strong>{service.name}</strong><small>{service.management_provider === "docker_compose" ? "Docker Compose / Dockge" : "TrueNAS App"}</small></div></div>
+                  <div className="update-row-title"><ServiceIcon service={service} catalogEntries={catalogEntries} /><div><strong>{service.name}</strong><small>{service.management_provider === "docker_compose" ? "Docker Compose / Dockge" : "TrueNAS App"}</small></div></div>
                   <div className={`update-state update-state-${state?.state ?? "unknown"}`}>
                     {state?.state === "available" ? "Update available" : state?.state === "current" ? "Up to date" : state?.state === "checking" ? "Checking…" : state?.state === "unavailable" ? "Check failed" : state?.state === "unknown" ? "Not checked" : "Not configured"}
                   </div>
@@ -1358,9 +1403,10 @@ function CardManagementStatus({ service, state, job, manageMode, onUpdate }: { s
   );
 }
 
-function ServiceIcon({ service }: { service: Service }) {
-  const brandedType = inferredServiceType(service);
-  const entry = brandedType ? CATALOG_BY_TYPE[brandedType] : null;
+function ServiceIcon({ service, catalogEntries }: { service: Service; catalogEntries: CatalogEntry[] }) {
+  const brandedType = inferredServiceType(service, catalogEntries);
+  const catalogByType = Object.fromEntries(catalogEntries.map((entry) => [entry.type, entry])) as Record<string, CatalogEntry>;
+  const entry = brandedType ? catalogByType[brandedType] : null;
   return <CatalogLogo entry={entry} fallback={service.icon ? <span className="custom-service-icon">{service.icon}</span> : <LinkIcon size={27} />} />;
 }
 
@@ -1400,6 +1446,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [editingWidget, setEditingWidget] = useState<DashboardWidget | null | undefined>(undefined);
   const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>({ dashboard_title: "Homelab Dashboard", show_greeting: true, telemetry_refresh_seconds: 15, update_status_refresh_seconds: 15, active_refresh_seconds: 3, update_check_interval_hours: 12 });
   const [extensions, setExtensions] = useState<ExtensionDescriptor[]>([]);
+  const [catalogEntries, setCatalogEntries] = useState<CatalogEntry[]>(SERVICE_CATALOG);
+  const [pageTemplates, setPageTemplates] = useState<PageTemplateDescriptor[]>([]);
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [updateStates, setUpdateStates] = useState<Record<number, ServiceUpdateState>>({});
   const [updateJobs, setUpdateJobs] = useState<UpdateJob[]>([]);
@@ -1433,8 +1481,17 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   async function loadExtensions() {
-    try { setExtensions(await api<ExtensionDescriptor[]>("/api/extensions")); }
-    catch { /* Extension inventory is informational. */ }
+    try {
+      const [inventory, customCatalog, templates] = await Promise.all([
+        api<ExtensionDescriptor[]>("/api/extensions"),
+        api<CatalogEntry[]>("/api/catalog/extensions"),
+        api<PageTemplateDescriptor[]>("/api/page-templates"),
+      ]);
+      setExtensions(inventory);
+      const builtInTypes = new Set(SERVICE_CATALOG.map((entry) => entry.type));
+      setCatalogEntries([...SERVICE_CATALOG, ...customCatalog.filter((entry) => !builtInTypes.has(entry.type))]);
+      setPageTemplates(templates);
+    } catch { /* Extension inventory is optional; built-in catalog remains available. */ }
   }
 
   async function loadAccount() {
@@ -1837,6 +1894,28 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setSelectedTemplate(null);
   }
 
+  async function importExtensionFile(file: File) {
+    const manifest = JSON.parse(await file.text()) as Record<string, unknown>;
+    if (manifest.format !== "homelab-dashboard-extension") throw new Error("This is not a Homelab Dashboard extension package.");
+    const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.map(String) : [];
+    const capabilities = Array.isArray(manifest.capabilities) ? manifest.capabilities.map(String) : [];
+    const summary = [`Install ${String(manifest.name ?? file.name)}?`, "", `Capabilities: ${capabilities.join(", ") || "none"}`, `Permissions: ${permissions.join(", ") || "none"}`, "", "v0.16 accepts data-only extension packages only; executable plugin code is not supported."] .join("\n");
+    if (!window.confirm(summary)) return;
+    await api<ExtensionDescriptor>("/api/extensions/import", { method: "POST", body: JSON.stringify(manifest) }, auth.csrf_token);
+    await loadExtensions();
+  }
+
+  async function toggleExtension(extension: ExtensionDescriptor) {
+    await api<ExtensionDescriptor>(`/api/extensions/${encodeURIComponent(extension.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: !extension.enabled }) }, auth.csrf_token);
+    await loadExtensions();
+  }
+
+  async function removeExtension(extension: ExtensionDescriptor) {
+    if (!window.confirm(`Remove ${extension.name}? Existing pages or service cards created from it will remain.`)) return;
+    await api<void>(`/api/extensions/${encodeURIComponent(extension.id)}`, { method: "DELETE" }, auth.csrf_token);
+    await loadExtensions();
+  }
+
   async function selectTheme(themeId: string) {
     setAppearanceBusy(true);
     setAppearanceError("");
@@ -2077,8 +2156,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                       onDragEnd={() => { setDraggingItem(null); setDragOverItemKey(null); }}
                     >
                       <a className="card-link" href={service.url} target="_blank" rel="noreferrer" aria-label={`Open ${service.name}`} onClick={(event) => { if (manageMode) event.preventDefault(); }}>
-                        <div className="icon" aria-hidden="true"><ServiceIcon service={service} /></div>
-                        <div className="card-copy"><h3>{service.name}</h3><p>{TYPE_LABELS[service.type] ?? service.type}</p></div>
+                        <div className="icon" aria-hidden="true"><ServiceIcon service={service} catalogEntries={catalogEntries} /></div>
+                        <div className="card-copy"><h3>{service.name}</h3><p>{catalogEntries.find((entry) => entry.type === service.type)?.name ?? TYPE_LABELS[service.type] ?? service.type}</p></div>
                         <span className={`status status-${serviceStatus.state}`} title={serviceStatus.title}><span />{serviceStatus.label}</span>
                         <div className={`card-detail-slot ${insight && insight.state !== "none" ? "has-detail" : "empty-detail"}`}>
                           {insight && insight.state !== "none" && (
@@ -2139,6 +2218,9 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           onExportDashboard={() => void exportDashboardLayout()}
           onImportDashboard={() => layoutImportRef.current?.click()}
           onRemoveTheme={async (themeId) => { await deleteTheme(themeId); await loadExtensions(); }}
+          onImportExtension={importExtensionFile}
+          onToggleExtension={toggleExtension}
+          onRemoveExtension={removeExtension}
         />
       )}
 
@@ -2148,6 +2230,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           states={updateStates}
           jobs={updateJobs}
           busy={updateBusy}
+          catalogEntries={catalogEntries}
           onClose={() => setUpdatesOpen(false)}
           onCheck={() => void checkForUpdates()}
           onUpdate={(service) => void startManagedUpdate(service)}
@@ -2175,7 +2258,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
       {editingWidget !== undefined && <WidgetModal widget={editingWidget} pages={pages} defaultPageId={activePageId} csrfToken={auth.csrf_token} api={api} onClose={() => setEditingWidget(undefined)} onChanged={async () => { await loadWidgets(); await loadStructure(); }} />}
 
-      {catalogOpen && <ServiceCatalogModal onClose={() => setCatalogOpen(false)} onSelect={chooseTemplate} />}
+      {catalogOpen && <ServiceCatalogModal catalogEntries={catalogEntries} onClose={() => setCatalogOpen(false)} onSelect={chooseTemplate} />}
 
       {editing !== undefined && (
         <ServiceModal
@@ -2186,6 +2269,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           defaultPageId={activePageId}
           allServices={services}
           connections={connections}
+          catalogEntries={catalogEntries}
           onClose={closeEditor}
           onSaved={() => { closeEditor(); void loadServices(); void loadStructure(); void loadConnections(); void refreshTelemetry(); void loadUpdateData(); }}
           onDeleted={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}
@@ -2196,6 +2280,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
         <PageModal
           page={editingPage}
           itemCount={editingPage ? pageItemCount(editingPage.id) : 0}
+          templates={pageTemplates}
           csrfToken={auth.csrf_token}
           onClose={() => setEditingPage(undefined)}
           onSaved={(saved) => {

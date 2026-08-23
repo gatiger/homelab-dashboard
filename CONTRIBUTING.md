@@ -26,3 +26,9 @@ Until the plugin contract is finalized, open an issue before building a large in
 Theme packages should use the documented v1 JSON format in `docs/extensions/themes.md`. Community themes must not depend on external scripts, CSS, fonts, or network resources. Keep theme IDs stable and use semantic versioning for updates.
 
 The repository includes `examples/themes/midnight-blue.json` as a starting point.
+
+## Data-only extension contributions
+
+v0.16 supports versioned JSON page-template and service-catalog packs without modifying core source code. Before proposing a built-in catalog/template change, consider whether it is better as a community data pack. See `docs/extensions/packages.md` and `examples/extensions/`.
+
+Do not submit extension packages that attempt to embed executable scripts, shell commands, secret material, or privileged Docker/filesystem/network behavior. The v0.16 schema intentionally rejects unknown fields and permissions outside the documented safe allow-list.

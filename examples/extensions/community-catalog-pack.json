@@ -1,0 +1,26 @@
+{
+  "format": "homelab-dashboard-extension",
+  "schema_version": 1,
+  "id": "community.example-catalog",
+  "name": "Example Service Catalog Pack",
+  "version": "1.0.0",
+  "author": "Example Community Author",
+  "description": "Shows how community packages can add metadata-only service definitions.",
+  "type": "catalog_pack",
+  "min_dashboard_version": "0.16.0",
+  "capabilities": ["service_catalog"],
+  "permissions": ["catalog:register-entries"],
+  "page_templates": [],
+  "catalog_entries": [
+    {
+      "type": "example-service",
+      "name": "Example Service",
+      "category": "Custom",
+      "icon": null,
+      "defaultPort": 8080,
+      "defaultScheme": "http",
+      "description": "Example community-defined service catalog entry.",
+      "aliases": ["example", "community"]
+    }
+  ]
+}

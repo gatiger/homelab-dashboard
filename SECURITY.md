@@ -35,3 +35,9 @@ Stored service API keys and qBittorrent WebUI credentials are encrypted using th
 v0.15 keeps Docker write privileges out of the main dashboard container. The optional update-agent does mount the Docker socket and should therefore be treated as a privileged host-management component. Its HTTP API is placed only on an internal Compose network, can require a shared token, accepts provider-specific resource identifiers rather than shell commands, and only exposes Compose projects whose working/config paths resolve inside the configured `UPDATE_AGENT_STACKS_ROOT`. Mount that stacks root read-only and never publish the agent port to the LAN or Internet.
 
 TrueNAS updates are sent to TrueNAS itself through its authenticated JSON-RPC WebSocket API. Use HTTPS/WSS and a dedicated user-linked API key with only the roles needed for app discovery/upgrades.
+
+## v0.16 data-only extensions
+
+General extension packages are schema-validated JSON. The v0.16 runtime accepts only page-template and service-catalog registration capabilities. Unknown fields and unknown permissions are rejected; imported packages cannot execute code or receive Docker, saved-secret, arbitrary network, or host-filesystem access.
+
+Page-template exports exclude service API keys, saved usernames/passwords, management-provider links/targets, and encrypted secrets. Templates can intentionally contain normal card URLs, bookmark URLs, and note/widget content, so authors should still review a package before publishing it publicly.

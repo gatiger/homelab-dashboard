@@ -60,3 +60,8 @@ The Extension Manager remains deliberately conservative. It inventories:
 - Imported data-only themes.
 
 Imported themes can be removed from the manager. v0.15 does **not** execute arbitrary community plugin code. The permission-aware executable extension runtime remains a later milestone.
+
+
+## Extensions
+
+Settings → Extensions inventories built-in modules, themes, and imported extension packages. v0.16 can import validated data-only page-template and service-catalog packs. Imported packs show their declared capabilities and permissions and can be enabled, disabled, or removed. Executable third-party plugins remain disabled.

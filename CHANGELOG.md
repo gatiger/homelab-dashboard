@@ -4,6 +4,29 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.16.0] - 2026-08-23
+
+### Added
+- Versioned `homelab-dashboard-extension` manifest format for general community data packages.
+- Explicit extension capability and permission declarations with a strict v0.16 allow-list.
+- Import/enable/disable/remove lifecycle for data-only extension packages in Settings → Extensions.
+- Reusable page-template packs available directly from the Add Page workflow.
+- Built-in Operations and Personal Start page templates.
+- Export any dashboard page as a shareable page-template extension package.
+- Community service-catalog packs that add metadata-only entries to the Add Service picker without editing source code.
+- Extension package authoring documentation and example page-template/catalog packs.
+- Automated backend tests for extension validation, enable/disable behavior, page instantiation, and secret-free page-template export.
+
+### Changed
+- Milestone 14 is now complete because reusable distributable page-template packs have shipped.
+- Extension Manager now shows capabilities, requested permissions, and enabled/disabled state for imported data packs.
+- Service editor and catalog picker merge enabled community catalog entries with the built-in catalog.
+
+### Security
+- v0.16 extension packages remain data-only. Unknown permissions such as Docker write access are rejected during validation.
+- Page-template exports exclude API keys, usernames/passwords, management providers/targets, controller links, and stored encrypted secrets.
+- Removing/disabling an extension affects future template/catalog availability only; it cannot silently delete existing dashboard content.
+
 ## [0.15.0] - 2026-08-23
 
 ### Added

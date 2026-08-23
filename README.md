@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.15.0
+ghcr.io/gatiger/homelab-dashboard:0.16.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -89,7 +89,10 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Configurable browser telemetry/update refresh intervals and scheduled update-discovery interval
 - Built-in Clock/Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets
 - Widgets can be assigned to any page/category and use Compact/Standard/Wide card sizes
-- Compact responsive command bar plus Extension Manager inventory for built-in modules and imported data-only theme packages
+- Compact responsive command bar plus Extension Manager for built-in modules, themes, and validated data-only community packages
+- Reusable page-template packs that can be exported from an existing page, shared as JSON, imported, enabled/disabled, and used when creating a new page
+- Community service-catalog packs that add safe metadata-only service definitions without editing source code
+- Versioned extension manifests with explicit capabilities/permissions; executable third-party plugin code remains blocked
 - Sequential Update All, health verification, update history, and Docker rollback on failed health checks
 - Dashboard layout export/import with secrets deliberately excluded
 - Page cloning and a visual custom-theme editor
@@ -115,7 +118,9 @@ The built-in widget pack includes Clock & Date, Note, Bookmarks, Dashboard Summa
 
 For a complete lockout where both the password and recovery code are unavailable, someone with legitimate shell access to the dashboard host can run `docker exec -it <dashboard-container> python -m app.admin reset-password`. This emergency path resets the local administrator password, invalidates all existing sessions, and rotates the recovery code. See [Account recovery](docs/configuration/account-recovery.md).
 
-Community themes can be imported as validated JSON packages. Theme extensions contain approved color tokens only and cannot execute CSS/JavaScript or access network services, Docker, files, or stored credentials. The Extension Manager shows installed built-in modules and imported theme packages; arbitrary executable community plugins remain a later milestone. See [Theme extensions](docs/extensions/themes.md) and the broader [extension architecture](docs/extensions/architecture.md).
+Community themes can be imported as validated JSON packages. v0.16 also accepts versioned **data-only extension packages** for reusable dashboard page templates and service-catalog metadata. Page templates can be exported directly from an existing page; secrets and management links are excluded before the package reaches the browser. Installed data packs can be enabled, disabled, or removed without deleting pages/cards that were already created from them.
+
+Extension manifests declare capabilities and permissions up front. The v0.16 permission allow-list contains only registration capabilities for templates and catalog metadata: packages still cannot execute JavaScript/Python/shell code, access Docker, read saved credentials, make arbitrary network requests, or access the host filesystem. See [Extension packages](docs/extensions/packages.md), [Theme extensions](docs/extensions/themes.md), and the broader [extension architecture](docs/extensions/architecture.md).
 
 ## Service catalog
 

@@ -141,7 +141,7 @@ Additional management providers are tracked separately below rather than making 
 - Widget-aware category counts/order and page-deletion safeguards
 - Extension Manager inventory for bundled modules and imported data-only themes
 
-## Milestone 14 — Advanced dashboard builder ✅ / 🚧
+## Milestone 14 — Advanced dashboard builder ✅
 
 - Custom visual theme editor ✅
 - Unified drag/reorder behavior for unpinned service and widget cards ✅
@@ -149,7 +149,7 @@ Additional management providers are tracked separately below rather than making 
 - Import/export of dashboard structure with secrets excluded ✅
 - Category naming/icon customization ✅
 - Dashboard page cloning ✅
-- Reusable distributable page-template packs 🚧
+- Reusable distributable page-template packs ✅
 - Additional built-in widget types ✅
 - Compact responsive command bar / header cleanup ✅
 
@@ -165,17 +165,22 @@ Additional management providers are tracked separately below rather than making 
 - Host-side emergency administrator reset command
 - In-place migration for existing single-administrator installations
 
-## Milestone 16 — Open extension platform 🚧
+## Milestone 16 — Open extension platform ✅ / 🚧
 
-- Versioned extension manifest
-- Permission/capability model
-- Plugin SDK and examples
-- Community extension registry
-- Installable/community integration adapter runtime
-- Community widget and service/catalog packs
-- Role-based permissions
-- Native/OIDC/SSO/reverse-proxy authentication adapters
-- OIDC / Authentik / Authelia support
+- Versioned extension manifest ✅
+- Explicit capability/permission declarations and allow-list validation ✅
+- Safe data-only page-template pack runtime ✅
+- Safe data-only service/catalog pack runtime ✅
+- Extension import, enable/disable, inventory, and removal lifecycle ✅
+- Export an existing dashboard page as a shareable secret-free template package ✅
+- Package authoring documentation and examples ✅
+- Executable plugin SDK/runtime with sandboxed permissions 🚧
+- Community extension registry/discovery 🚧
+- Installable/community integration adapter runtime 🚧
+- Community executable widget packs 🚧
+- Role-based permissions 🚧
+- Native/OIDC/SSO/reverse-proxy authentication adapters 🚧
+- OIDC / Authentik / Authelia support 🚧
 
 ## Management-provider follow-ups 🚧
 

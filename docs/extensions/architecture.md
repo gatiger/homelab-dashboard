@@ -1,6 +1,6 @@
 # Extension architecture direction
 
-v0.9 established the first extension-shaped feature: validated, importable theme packages. v0.10 added reusable integration descriptors/capabilities, v0.13 added the first built-in widget runtime and Extension Manager inventory, and v0.14 expands the builder and widget surface. Built-in adapters and widgets still ship with core for now, but their contracts are being shaped so later community packages can plug into the same UI safely.
+v0.9 established validated importable theme packages, v0.10 added reusable integration descriptors/capabilities, v0.13 added the first built-in widget runtime and Extension Manager inventory, and v0.14 expanded the dashboard builder. v0.16 introduces the first general **versioned extension manifest** plus install/enable/disable/remove lifecycle for safe data-only page-template and service-catalog packs. Built-in executable adapters/widgets still ship with core; arbitrary third-party code remains disabled until a sandboxed SDK and broader permission system are ready.
 
 The long-term extension system is intended to support several capability classes without requiring users to edit Homelab Dashboard source code:
 
@@ -12,7 +12,7 @@ The long-term extension system is intended to support several capability classes
 
 Extensions should declare a manifest version, Homelab Dashboard compatibility range, extension type, and requested capabilities. Extensions must not automatically inherit access to Docker, saved service credentials, the filesystem, or unrelated integrations.
 
-The theme format is intentionally the first importable implementation because it lets the project exercise validation, persistence, compatibility, selection, inventory, and removal flows without allowing executable community code. The v0.13+ widgets remain built into core; arbitrary widget/integration code is intentionally deferred until the permission model and SDK are ready.
+Themes remain a separate visual-token package format. General v0.16 extension manifests declare capabilities and permissions explicitly, but the accepted permission allow-list is intentionally narrow: packages may register page templates and service-catalog metadata only. The runtime rejects unknown/dangerous permissions and does not expose Docker, saved secrets, arbitrary networking, the filesystem, or executable code. Built-in widgets/integrations remain in core; community executable widget/integration code is deferred until a sandboxed SDK is ready. See [Data-only extension packages](packages.md).
 
 ## Future 3D Printer Center
 

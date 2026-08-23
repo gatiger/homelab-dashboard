@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useState } from "react";
+import React, { FormEvent, useEffect, useRef, useState } from "react";
 import { Cable, Copy, Download, Gauge, Info, KeyRound, LayoutGrid, Monitor, Palette, Puzzle, Save, Settings, ShieldCheck, Upload, X } from "lucide-react";
 
 export type DashboardSettings = {
@@ -13,13 +13,16 @@ export type DashboardSettings = {
 export type ExtensionDescriptor = {
   id: string;
   name: string;
-  type: "core" | "theme" | "widget_pack";
+  type: "core" | "theme" | "widget_pack" | "page_template_pack" | "catalog_pack" | "bundle";
   version: string;
   author: string;
   description: string;
   source: "built_in" | "imported";
   active: boolean;
+  enabled: boolean;
   removable: boolean;
+  capabilities: string[];
+  permissions: string[];
 };
 
 export type AccountAuditEvent = {
@@ -85,6 +88,9 @@ export function SettingsModal({
   onExportDashboard,
   onImportDashboard,
   onRemoveTheme,
+  onImportExtension,
+  onToggleExtension,
+  onRemoveExtension,
 }: {
   settings: DashboardSettings;
   account: AccountSummary | null;
@@ -104,6 +110,9 @@ export function SettingsModal({
   onExportDashboard: () => void;
   onImportDashboard: () => void;
   onRemoveTheme: (themeId: string) => Promise<void>;
+  onImportExtension: (file: File) => Promise<void>;
+  onToggleExtension: (extension: ExtensionDescriptor) => Promise<void>;
+  onRemoveExtension: (extension: ExtensionDescriptor) => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>("general");
   const [form, setForm] = useState(settings);
@@ -116,6 +125,7 @@ export function SettingsModal({
   const [recoveryPassword, setRecoveryPassword] = useState("");
   const [newRecoveryCode, setNewRecoveryCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const extensionInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => setForm(settings), [settings]);
 
   async function save(event: FormEvent) {
@@ -219,9 +229,28 @@ export function SettingsModal({
 
             {tab === "connections" && <div className="settings-panel"><div className="settings-heading"><Cable size={19} /><div><h3>Connections</h3><p>Reusable controller credentials for TrueNAS and future management providers.</p></div></div>{connections.length ? <div className="settings-list">{connections.map((item) => <div key={item.id}><span><strong>{item.name}</strong><small>{item.type} · used by {item.used_by}</small></span></div>)}</div> : <div className="settings-empty">No management connections configured.</div>}<button className="primary" type="button" onClick={() => openSub(onOpenConnections)}>Manage connections</button></div>}
 
-            {tab === "extensions" && <div className="settings-panel"><div className="settings-heading"><Puzzle size={19} /><div><h3>Extension Manager</h3><p>Installed built-in modules and safe data-only extensions. Arbitrary executable plugins are not enabled yet.</p></div></div><div className="extension-list">{extensions.map((extension) => <div className="extension-row" key={extension.id}><div className="extension-mark"><Puzzle size={17} /></div><span><strong>{extension.name}</strong><small>{extension.description}</small><em>{extension.author} · v{extension.version} · {extension.source === "built_in" ? "Built in" : "Imported"}{extension.active && extension.type === "theme" ? " · Active" : ""}</em></span>{extension.removable && <button className="danger-button compact-button" type="button" onClick={() => void onRemoveTheme(extension.id.replace(/^theme\./, ""))}>Remove</button>}</div>)}</div></div>}
+            {tab === "extensions" && <div className="settings-panel">
+              <div className="settings-heading"><Puzzle size={19} /><div><h3>Extension Manager</h3><p>Install and manage validated data-only page-template and service-catalog packs. Executable third-party plugin code is still blocked.</p></div></div>
+              <div className="builder-action-grid">
+                <button className="primary" type="button" onClick={() => extensionInputRef.current?.click()}><Upload size={16} /> Import extension</button>
+                <input ref={extensionInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; setError(""); void onImportExtension(file).catch((err) => setError(err instanceof Error ? err.message : "Unable to import extension.")); }} />
+              </div>
+              <div className="settings-callout"><strong>Safe extension boundary</strong><span>v0.16 packages may register page templates or service-catalog metadata only. They cannot run JavaScript/Python, access Docker, read saved credentials, make network requests, or access the host filesystem.</span></div>
+              {error && <div className="notice compact">{error}</div>}
+              <div className="extension-list">{extensions.map((extension) => <div className={`extension-row ${!extension.enabled ? "extension-disabled" : ""}`} key={extension.id}>
+                <div className="extension-mark"><Puzzle size={17} /></div>
+                <span><strong>{extension.name}</strong><small>{extension.description}</small><em>{extension.author} · v{extension.version} · {extension.source === "built_in" ? "Built in" : "Imported"}{extension.active && extension.type === "theme" ? " · Active" : ""}{extension.source === "imported" && extension.type !== "theme" ? extension.enabled ? " · Enabled" : " · Disabled" : ""}</em>
+                  {extension.capabilities?.length > 0 && <small>Capabilities: {extension.capabilities.join(", ")}</small>}
+                  {extension.permissions?.length > 0 && <small>Permissions: {extension.permissions.join(", ")}</small>}
+                </span>
+                {extension.source === "imported" && extension.type !== "theme" && <button className="secondary compact-button" type="button" onClick={() => void onToggleExtension(extension).catch((err) => setError(err instanceof Error ? err.message : "Unable to change extension state."))}>{extension.enabled ? "Disable" : "Enable"}</button>}
+                {extension.removable && (extension.type === "theme"
+                  ? <button className="danger-button compact-button" type="button" onClick={() => void onRemoveTheme(extension.id.replace(/^theme\./, ""))}>Remove</button>
+                  : <button className="danger-button compact-button" type="button" onClick={() => void onRemoveExtension(extension).catch((err) => setError(err instanceof Error ? err.message : "Unable to remove extension."))}>Remove</button>)}
+              </div>)}</div>
+            </div>}
 
-            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.15 adds local account password changes, one-time recovery codes, forgotten-password recovery, session invalidation, security audit history, and emergency host-side recovery.</small></div></div>}
+            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.16 adds validated extension manifests, permission/capability declarations, reusable page-template packs, and community service-catalog packs while keeping executable third-party code disabled.</small></div></div>}
           </div>
         </div>
       </section>

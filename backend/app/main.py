@@ -27,7 +27,7 @@ from websocket import WebSocketTimeoutException, create_connection
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 APP_NAME = os.getenv("APP_NAME", "Homelab Dashboard")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
@@ -44,7 +44,8 @@ UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 36
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.15.0")
+APP_VERSION = "0.16.0"
+app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION)
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -537,13 +538,214 @@ class DashboardItemReorder(BaseModel):
 class ExtensionDescriptor(BaseModel):
     id: str
     name: str
-    type: Literal["core", "theme", "widget_pack"]
+    type: Literal["core", "theme", "widget_pack", "page_template_pack", "catalog_pack", "bundle"]
     version: str
     author: str
     description: str
     source: Literal["built_in", "imported"]
     active: bool = True
+    enabled: bool = True
     removable: bool = False
+    capabilities: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+
+
+EXTENSION_ID = re.compile(r"^[a-z0-9][a-z0-9.-]{2,79}$")
+EXTENSION_CAPABILITIES = {"page_templates", "service_catalog"}
+EXTENSION_PERMISSIONS = {"dashboard:register-templates", "catalog:register-entries"}
+
+
+class ExtensionCatalogEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: str = Field(min_length=2, max_length=80)
+    name: str = Field(min_length=1, max_length=80)
+    category: str = Field(min_length=1, max_length=80)
+    icon: str | None = Field(default=None, max_length=80)
+    defaultPort: int | None = Field(default=None, ge=1, le=65535)
+    defaultScheme: Literal["http", "https"] | None = None
+    description: str = Field(min_length=1, max_length=240)
+    aliases: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("type")
+    @classmethod
+    def validate_catalog_type(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,79}", value):
+            raise ValueError("Catalog service type must use lowercase letters, numbers, dots, underscores, or hyphens")
+        return value
+
+    @field_validator("name", "category", "description")
+    @classmethod
+    def trim_catalog_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+    @field_validator("aliases")
+    @classmethod
+    def normalize_aliases(cls, values: list[str]) -> list[str]:
+        return [value.strip()[:80] for value in values if value.strip()][:20]
+
+
+class PageTemplateCategory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    sort_order: int = Field(default=0, ge=0, le=1000)
+    collapsed: bool = False
+    icon: str | None = Field(default=None, max_length=32)
+
+
+class PageTemplateService(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    type: str = Field(default="link", min_length=1, max_length=80)
+    url: str = Field(min_length=1, max_length=1000)
+    category: str = Field(default="General", min_length=1, max_length=80)
+    icon: str | None = Field(default=None, max_length=32)
+    enabled: bool = True
+    status_check: bool = True
+    favorite: bool = False
+    card_size: Literal["compact", "standard", "wide"] = "standard"
+    sort_order: int = Field(default=0, ge=0, le=1000000)
+
+    @field_validator("type")
+    @classmethod
+    def validate_template_service_type(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", value):
+            raise ValueError("Template service type must use lowercase letters, numbers, dots, underscores, or hyphens")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def validate_template_url(cls, value: str) -> str:
+        value = value.strip()
+        if urlparse(value).scheme not in {"http", "https"}:
+            raise ValueError("Template service URLs must use http or https")
+        return value
+
+
+class PageTemplateWidget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: WidgetType
+    title: str = Field(min_length=1, max_length=80)
+    category: str = Field(default="Widgets", min_length=1, max_length=80)
+    card_size: Literal["compact", "standard", "wide"] = "standard"
+    sort_order: int = Field(default=0, ge=0, le=1000000)
+    enabled: bool = True
+    config: dict[str, object] = Field(default_factory=dict)
+
+
+class PageTemplate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=2, max_length=60)
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="Reusable dashboard page template", max_length=240)
+    categories: list[PageTemplateCategory] = Field(default_factory=list, max_length=100)
+    services: list[PageTemplateService] = Field(default_factory=list, max_length=500)
+    widgets: list[PageTemplateWidget] = Field(default_factory=list, max_length=500)
+
+    @field_validator("id")
+    @classmethod
+    def validate_template_id(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,59}", value):
+            raise ValueError("Template id must use lowercase letters, numbers, and hyphens")
+        return value
+
+
+class ExtensionPackage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    format: Literal["homelab-dashboard-extension"] = "homelab-dashboard-extension"
+    schema_version: Literal[1] = 1
+    id: str = Field(min_length=3, max_length=80)
+    name: str = Field(min_length=1, max_length=100)
+    version: str = Field(min_length=5, max_length=40)
+    author: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="Community data extension", max_length=240)
+    type: Literal["page_template_pack", "catalog_pack", "bundle"]
+    min_dashboard_version: str = Field(default="0.16.0", min_length=5, max_length=40)
+    capabilities: list[str] = Field(default_factory=list, max_length=10)
+    permissions: list[str] = Field(default_factory=list, max_length=10)
+    page_templates: list[PageTemplate] = Field(default_factory=list, max_length=50)
+    catalog_entries: list[ExtensionCatalogEntry] = Field(default_factory=list, max_length=500)
+
+    @field_validator("id")
+    @classmethod
+    def validate_extension_id(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not EXTENSION_ID.fullmatch(value):
+            raise ValueError("Extension id must use lowercase letters, numbers, dots, or hyphens")
+        if value.startswith("core.") or value.startswith("theme."):
+            raise ValueError("Extension id uses a reserved prefix")
+        return value
+
+    @field_validator("version", "min_dashboard_version")
+    @classmethod
+    def validate_extension_version(cls, value: str) -> str:
+        value = value.strip()
+        if not THEME_VERSION.fullmatch(value):
+            raise ValueError("Version must look like 1.0.0")
+        return value
+
+    @field_validator("name", "author", "description")
+    @classmethod
+    def trim_extension_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_extension_capabilities(cls, values: list[str]) -> list[str]:
+        unique = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        unknown = [value for value in unique if value not in EXTENSION_CAPABILITIES]
+        if unknown:
+            raise ValueError(f"Unsupported extension capabilities: {', '.join(unknown)}")
+        return unique
+
+    @field_validator("permissions")
+    @classmethod
+    def validate_extension_permissions(cls, values: list[str]) -> list[str]:
+        unique = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        unknown = [value for value in unique if value not in EXTENSION_PERMISSIONS]
+        if unknown:
+            raise ValueError(f"Unsupported extension permissions: {', '.join(unknown)}")
+        return unique
+
+
+class ExtensionStateUpdate(BaseModel):
+    enabled: bool
+
+
+class PageTemplateDescriptor(BaseModel):
+    extension_id: str
+    template_id: str
+    name: str
+    description: str
+    author: str
+    source: Literal["built_in", "imported"]
+
+
+BUILTIN_PAGE_TEMPLATES: list[PageTemplate] = [
+    PageTemplate(
+        id="operations", name="Operations", description="At-a-glance service health and update status.",
+        categories=[PageTemplateCategory(name="Overview", sort_order=1, icon="server")],
+        widgets=[
+            PageTemplateWidget(type="system_summary", title="Dashboard Summary", category="Overview", card_size="standard", sort_order=1, config={"show_services": True, "show_updates": True, "show_connections": True}),
+            PageTemplateWidget(type="service_status", title="Service Status", category="Overview", card_size="wide", sort_order=2, config={"limit": 8, "show_latency": True}),
+            PageTemplateWidget(type="update_overview", title="Updates", category="Overview", card_size="wide", sort_order=3, config={"limit": 8, "show_current": False}),
+        ],
+    ),
+    PageTemplate(
+        id="personal-start", name="Personal Start", description="Clock, quick links, and a notes area.",
+        categories=[PageTemplateCategory(name="Home", sort_order=1, icon="star")],
+        widgets=[
+            PageTemplateWidget(type="clock", title="Clock & Date", category="Home", card_size="standard", sort_order=1, config={"format": "12", "timezone": "local", "show_date": True, "show_seconds": False}),
+            PageTemplateWidget(type="bookmarks", title="Quick Links", category="Home", card_size="wide", sort_order=2, config={"items": []}),
+            PageTemplateWidget(type="note", title="Notes", category="Home", card_size="wide", sort_order=3, config={"text": ""}),
+        ],
+    ),
+]
 
 
 SETTINGS_DEFAULTS: dict[str, str] = {
@@ -983,6 +1185,14 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS installed_extensions (
+                id TEXT PRIMARY KEY,
+                manifest_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                installed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS management_connections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -1358,7 +1568,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.15.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.16.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -1425,7 +1635,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.15.0", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": "HomelabDashboard/0.16.0", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -2692,7 +2902,7 @@ def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[Inte
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.15.0", "time": iso_now()}
+    return {"status": "ok", "version": APP_VERSION, "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -3000,24 +3210,284 @@ def delete_widget(widget_id: int, _: SessionUser = Depends(require_write_auth)) 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+def extension_version_tuple(value: str) -> tuple[int, int, int]:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
+    return tuple(int(part) for part in match.groups()) if match else (0, 0, 0)
+
+
+def validate_extension_package_content(package: ExtensionPackage) -> None:
+    if extension_version_tuple(package.min_dashboard_version) > extension_version_tuple(APP_VERSION):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Extension requires Homelab Dashboard {package.min_dashboard_version} or newer",
+        )
+    template_ids = [template.id for template in package.page_templates]
+    if len(template_ids) != len(set(template_ids)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Extension contains duplicate page-template ids")
+    catalog_types = [entry.type for entry in package.catalog_entries]
+    if len(catalog_types) != len(set(catalog_types)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Extension contains duplicate service catalog types")
+    needs_templates = bool(package.page_templates)
+    needs_catalog = bool(package.catalog_entries)
+    if needs_templates and "page_templates" not in package.capabilities:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Page-template packages must declare the page_templates capability")
+    if needs_templates and "dashboard:register-templates" not in package.permissions:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Page-template packages must request dashboard:register-templates")
+    if needs_catalog and "service_catalog" not in package.capabilities:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Catalog packages must declare the service_catalog capability")
+    if needs_catalog and "catalog:register-entries" not in package.permissions:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Catalog packages must request catalog:register-entries")
+    if package.type == "page_template_pack" and (not needs_templates or needs_catalog):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page_template_pack must contain templates only")
+    if package.type == "catalog_pack" and (not needs_catalog or needs_templates):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="catalog_pack must contain catalog entries only")
+    if package.type == "bundle" and not (needs_templates or needs_catalog):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="bundle must contain at least one supported data capability")
+
+
+def installed_extension_rows(connection: sqlite3.Connection, *, enabled_only: bool = False) -> list[tuple[ExtensionPackage, bool]]:
+    query = "SELECT * FROM installed_extensions"
+    if enabled_only:
+        query += " WHERE enabled = 1"
+    query += " ORDER BY id COLLATE NOCASE"
+    result: list[tuple[ExtensionPackage, bool]] = []
+    for row in connection.execute(query).fetchall():
+        try:
+            package = ExtensionPackage.model_validate_json(row["manifest_json"])
+            validate_extension_package_content(package)
+            result.append((package, bool(row["enabled"])))
+        except (ValueError, HTTPException):
+            continue
+    return result
+
+
+def extension_descriptor(package: ExtensionPackage, enabled: bool) -> ExtensionDescriptor:
+    return ExtensionDescriptor(
+        id=package.id,
+        name=package.name,
+        type=package.type,
+        version=package.version,
+        author=package.author,
+        description=package.description,
+        source="imported",
+        active=enabled,
+        enabled=enabled,
+        removable=True,
+        capabilities=package.capabilities,
+        permissions=package.permissions,
+    )
+
+
+def export_page_payload(connection: sqlite3.Connection, page_id: int) -> dict[str, object]:
+    page = require_page(connection, page_id)
+    categories = [
+        dict(name=row["name"], sort_order=row["sort_order"], collapsed=bool(row["collapsed"]), icon=row["icon"] if "icon" in row.keys() else None)
+        for row in connection.execute("SELECT * FROM category_layouts WHERE page_id = ? ORDER BY sort_order, name COLLATE NOCASE", (page_id,)).fetchall()
+    ]
+    services_out: list[dict[str, object]] = []
+    for row in connection.execute("SELECT * FROM services WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
+        services_out.append({
+            "name": row["name"], "type": row["type"], "url": row["url"], "category": row["category"], "icon": row["icon"],
+            "enabled": bool(row["enabled"]), "status_check": bool(row["status_check"]), "favorite": bool(row["favorite"]),
+            "card_size": row["card_size"], "sort_order": row["sort_order"],
+        })
+    widgets_out: list[dict[str, object]] = []
+    for row in connection.execute("SELECT * FROM dashboard_widgets WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
+        try:
+            config = json.loads(row["config_json"] or "{}")
+        except json.JSONDecodeError:
+            config = {}
+        widgets_out.append({
+            "type": row["type"], "title": row["title"], "category": row["category"], "card_size": row["card_size"],
+            "sort_order": row["sort_order"], "enabled": bool(row["enabled"]), "config": config,
+        })
+    return {"name": page["name"], "categories": categories, "services": services_out, "widgets": widgets_out}
+
+
+def unique_page_name(connection: sqlite3.Connection, requested_name: str) -> str:
+    base_name = requested_name.strip()[:60] or "New page"
+    name = base_name
+    suffix = 2
+    while connection.execute("SELECT 1 FROM dashboard_pages WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+        tail = f" {suffix}"
+        name = f"{base_name[:60-len(tail)]}{tail}"
+        suffix += 1
+    return name
+
+
+def create_page_from_template(connection: sqlite3.Connection, template: PageTemplate, requested_name: str) -> DashboardPage:
+    now = iso_now()
+    name = unique_page_name(connection, requested_name)
+    page_order = int(connection.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM dashboard_pages").fetchone()[0])
+    cursor = connection.execute(
+        "INSERT INTO dashboard_pages (name, sort_order, is_default, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+        (name, page_order, now, now),
+    )
+    page_id = int(cursor.lastrowid)
+    for index, category in enumerate(template.categories, start=1):
+        icon = category.icon.strip().lower() if category.icon else None
+        if icon and not re.fullmatch(r"[a-z0-9-]{1,32}", icon):
+            icon = None
+        connection.execute(
+            "INSERT OR IGNORE INTO category_layouts (page_id, name, sort_order, collapsed, icon) VALUES (?, ?, ?, ?, ?)",
+            (page_id, category.name, category.sort_order or index, int(category.collapsed), icon),
+        )
+    for index, service in enumerate(template.services, start=1):
+        ensure_category_layout(connection, page_id, service.category)
+        connection.execute(
+            """INSERT INTO services (name,type,url,category,page_id,icon,enabled,status_check,favorite,card_size,sort_order,management_provider,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (service.name, service.type, service.url, service.category, page_id, service.icon, int(service.enabled), int(service.status_check),
+             int(service.favorite), service.card_size, service.sort_order or index, "none", now, now),
+        )
+    for index, widget in enumerate(template.widgets, start=1):
+        ensure_category_layout(connection, page_id, widget.category)
+        config = normalize_widget_config(widget.type, widget.config)
+        connection.execute(
+            """INSERT INTO dashboard_widgets (type,title,page_id,category,card_size,sort_order,enabled,config_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (widget.type, widget.title, page_id, widget.category, widget.card_size, widget.sort_order or index, int(widget.enabled),
+             json.dumps(config, separators=(",", ":")), now, now),
+        )
+    row = connection.execute("SELECT * FROM dashboard_pages WHERE id = ?", (page_id,)).fetchone()
+    return row_to_page(row)
+
+
 @app.get("/api/extensions", response_model=list[ExtensionDescriptor])
 def list_extensions(_: SessionUser = Depends(require_auth)) -> list[ExtensionDescriptor]:
     built_in = [
-        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version="0.15.0", author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version="0.15.0", author="Homelab Dashboard", description="Clock, note, bookmarks, dashboard-summary, service-status, and update-overview widgets.", source="built_in", active=True, removable=False),
-        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version="0.15.0", author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, removable=False),
+        ExtensionDescriptor(id="core.theme-engine", name="Theme Engine", type="core", version=APP_VERSION, author="Homelab Dashboard", description="Built-in appearance engine and validated data-only theme packages.", source="built_in", active=True, enabled=True, removable=False),
+        ExtensionDescriptor(id="core.widgets", name="Built-in Widget Pack", type="widget_pack", version=APP_VERSION, author="Homelab Dashboard", description="Clock, note, bookmarks, dashboard-summary, service-status, and update-overview widgets.", source="built_in", active=True, enabled=True, removable=False),
+        ExtensionDescriptor(id="core.update-manager", name="Update Manager", type="core", version=APP_VERSION, author="Homelab Dashboard", description="Management providers, update discovery, progress, health verification, and history.", source="built_in", active=True, enabled=True, removable=False),
+        ExtensionDescriptor(id="core.page-templates", name="Starter Page Templates", type="page_template_pack", version=APP_VERSION, author="Homelab Dashboard", description="Built-in reusable Operations and Personal Start dashboard pages.", source="built_in", active=True, enabled=True, removable=False, capabilities=["page_templates"], permissions=[]),
     ]
     with db() as connection:
         selected = connection.execute("SELECT value FROM app_settings WHERE key = 'theme_id'").fetchone()
         selected_id = selected["value"] if selected else "system"
         themes = list_theme_rows(connection)
-    imported = [
+        packages = installed_extension_rows(connection)
+    imported_themes = [
         ExtensionDescriptor(
             id=f"theme.{theme.id}", name=theme.name, type="theme", version=theme.version, author=theme.author,
-            description=theme.description or "Imported visual theme", source="imported", active=selected_id == theme.id, removable=True,
+            description=theme.description or "Imported visual theme", source="imported", active=selected_id == theme.id, enabled=True, removable=True,
+            capabilities=["appearance"], permissions=[],
         ) for theme in themes
     ]
-    return built_in + imported
+    return built_in + imported_themes + [extension_descriptor(package, enabled) for package, enabled in packages]
+
+
+@app.post("/api/extensions/import", response_model=ExtensionDescriptor, status_code=status.HTTP_201_CREATED)
+def import_extension(payload: ExtensionPackage, _: SessionUser = Depends(require_write_auth)) -> ExtensionDescriptor:
+    validate_extension_package_content(payload)
+    now = iso_now()
+    with db() as connection:
+        if connection.execute("SELECT 1 FROM installed_extensions WHERE id = ?", (payload.id,)).fetchone():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An extension with that id is already installed")
+        connection.execute(
+            "INSERT INTO installed_extensions (id, manifest_json, enabled, installed_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+            (payload.id, payload.model_dump_json(), now, now),
+        )
+    return extension_descriptor(payload, True)
+
+
+@app.patch("/api/extensions/{extension_id}", response_model=ExtensionDescriptor)
+def set_extension_state(extension_id: str, payload: ExtensionStateUpdate, _: SessionUser = Depends(require_write_auth)) -> ExtensionDescriptor:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM installed_extensions WHERE id = ?", (extension_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Extension not found")
+        package = ExtensionPackage.model_validate_json(row["manifest_json"])
+        connection.execute("UPDATE installed_extensions SET enabled = ?, updated_at = ? WHERE id = ?", (int(payload.enabled), iso_now(), extension_id))
+    return extension_descriptor(package, payload.enabled)
+
+
+@app.delete("/api/extensions/{extension_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_extension(extension_id: str, _: SessionUser = Depends(require_write_auth)) -> Response:
+    with db() as connection:
+        cursor = connection.execute("DELETE FROM installed_extensions WHERE id = ?", (extension_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Extension not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/catalog/extensions", response_model=list[ExtensionCatalogEntry])
+def extension_catalog_entries(_: SessionUser = Depends(require_auth)) -> list[ExtensionCatalogEntry]:
+    entries: list[ExtensionCatalogEntry] = []
+    seen: set[str] = set()
+    with db() as connection:
+        packages = installed_extension_rows(connection, enabled_only=True)
+    for package, _enabled in packages:
+        for entry in package.catalog_entries:
+            if entry.type in seen:
+                continue
+            seen.add(entry.type)
+            entries.append(entry)
+    return entries
+
+
+@app.get("/api/page-templates", response_model=list[PageTemplateDescriptor])
+def list_page_templates(_: SessionUser = Depends(require_auth)) -> list[PageTemplateDescriptor]:
+    result = [
+        PageTemplateDescriptor(extension_id="core.page-templates", template_id=template.id, name=template.name, description=template.description, author="Homelab Dashboard", source="built_in")
+        for template in BUILTIN_PAGE_TEMPLATES
+    ]
+    with db() as connection:
+        packages = installed_extension_rows(connection, enabled_only=True)
+    for package, _enabled in packages:
+        for template in package.page_templates:
+            result.append(PageTemplateDescriptor(extension_id=package.id, template_id=template.id, name=template.name, description=template.description, author=package.author, source="imported"))
+    return result
+
+
+def resolve_page_template(connection: sqlite3.Connection, extension_id: str, template_id: str) -> PageTemplate:
+    if extension_id == "core.page-templates":
+        for template in BUILTIN_PAGE_TEMPLATES:
+            if template.id == template_id:
+                return template
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page template not found")
+    row = connection.execute("SELECT * FROM installed_extensions WHERE id = ? AND enabled = 1", (extension_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Enabled extension not found")
+    package = ExtensionPackage.model_validate_json(row["manifest_json"])
+    validate_extension_package_content(package)
+    for template in package.page_templates:
+        if template.id == template_id:
+            return template
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page template not found")
+
+
+@app.post("/api/page-templates/{extension_id}/{template_id}/instantiate", response_model=DashboardPage, status_code=status.HTTP_201_CREATED)
+def instantiate_page_template(extension_id: str, template_id: str, payload: PageCloneRequest, _: SessionUser = Depends(require_write_auth)) -> DashboardPage:
+    with db() as connection:
+        template = resolve_page_template(connection, extension_id, template_id)
+        return create_page_from_template(connection, template, payload.name)
+
+
+@app.get("/api/pages/{page_id}/template-package", response_model=ExtensionPackage)
+def export_page_template_package(page_id: int, _: SessionUser = Depends(require_auth)) -> ExtensionPackage:
+    with db() as connection:
+        page = export_page_payload(connection, page_id)
+    slug = re.sub(r"[^a-z0-9]+", "-", str(page["name"]).lower()).strip("-")[:48] or "page"
+    template = PageTemplate(
+        id=slug,
+        name=str(page["name"]),
+        description=f"Reusable template exported from the {page['name']} dashboard page.",
+        categories=[PageTemplateCategory.model_validate(item) for item in page["categories"]],
+        services=[PageTemplateService.model_validate(item) for item in page["services"]],
+        widgets=[PageTemplateWidget.model_validate(item) for item in page["widgets"]],
+    )
+    return ExtensionPackage(
+        id=f"local.{slug}-templates",
+        name=f"{page['name']} Page Template",
+        version="1.0.0",
+        author="Homelab Dashboard User",
+        description="Shareable page-template package. API keys, passwords, and management links are excluded.",
+        type="page_template_pack",
+        min_dashboard_version="0.16.0",
+        capabilities=["page_templates"],
+        permissions=["dashboard:register-templates"],
+        page_templates=[template],
+    )
 
 
 @app.get("/api/dashboard/export")

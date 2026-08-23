@@ -14,9 +14,9 @@
 ## Current layers
 
 - **Production application container:** Nginx serves the React/TypeScript frontend and proxies `/api` to the local FastAPI process inside the same image. The source tree still keeps frontend and backend concerns separate for development.
-- **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata (identifier, name, category, icon, common port, description, aliases, and capability hints).
+- **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata; enabled v0.16 community catalog packs are merged into the runtime picker as validated data-only entries.
 - **Backend:** FastAPI authentication, configuration, health checks, secret storage, and integration adapters.
-- **Database:** SQLite in a persistent Docker volume. Services, pages, widgets, Settings, appearance selection, imported theme manifests, connections, and update history are stored alongside dashboard configuration.
+- **Database:** SQLite in a persistent Docker volume. Services, pages, widgets, Settings, appearance selection, imported theme manifests, installed data-extension manifests, connections, and update history are stored alongside dashboard configuration.
 - **Theme layer:** Frontend components consume validated design tokens. Built-in and imported themes share the same data shape; imported theme packages are non-executable JSON.
 - **Integration adapters:** Service-specific backend functions for supported rich cards; unsupported catalog entries still work as generic monitored links.
 - **Docker access (optional):** The base deployment has no Docker socket access. Read-only insight uses a restricted socket proxy. One-click Docker Compose updates use a separate update-agent sidecar on a private internal network; only that agent receives the raw socket.
@@ -30,9 +30,9 @@ The catalog is intentionally separate from configured services. A catalog entry 
 
 ## Extension path
 
-v0.9 established the first versioned extension-shaped package: non-executable theme manifests. v0.10 adds explicit backend integration descriptors and a shared activity/progress data model. The same package-management principles will later expand to catalog packs, widgets, installable integration adapters, and authentication adapters with explicit capability declarations.
+v0.9 established non-executable theme manifests. v0.10 added explicit backend integration descriptors and a shared activity/progress model. v0.16 adds the first general `homelab-dashboard-extension` manifest and persistent install/enable/disable/remove lifecycle. The initial runtime accepts two safe data capabilities: reusable page templates and service-catalog metadata.
 
-The catalog metadata will become the basis for future versioned integration manifests. Rich integrations can declare capabilities (status, metrics, activity, controls, authentication methods) without requiring every catalog entry to ship custom backend code. See `docs/extensions/architecture.md`.
+General extension manifests declare both capabilities and requested permissions. The v0.16 allow-list grants registration only; unknown permissions are rejected and no package can execute code, access Docker, read stored credentials, open arbitrary network connections, or access the host filesystem. Future executable widgets/integrations/authentication adapters will require a separate sandboxed SDK and broader permission design. See `docs/extensions/architecture.md` and `docs/extensions/packages.md`.
 
 ## Integration/activity model
 
@@ -55,15 +55,15 @@ The update-agent is a privileged component because Docker socket access is effec
 
 ## Settings and widget model
 
-Dashboard-wide preferences are persisted in the existing `app_settings` store and exposed through authenticated Settings endpoints. v0.14 uses these preferences for the dashboard title/greeting, browser telemetry refresh cadence, cached update-state refresh cadence, active-job refresh cadence, and the server-side update-discovery interval. Browser refresh timing and update discovery remain intentionally separate so the UI can feel live without repeatedly querying registries or platform APIs.
+Dashboard-wide preferences are persisted in the existing `app_settings` store and exposed through authenticated Settings endpoints. v0.16 uses these preferences for the dashboard title/greeting, browser telemetry refresh cadence, cached update-state refresh cadence, active-job refresh cadence, and the server-side update-discovery interval. Browser refresh timing and update discovery remain intentionally separate so the UI can feel live without repeatedly querying registries or platform APIs.
 
-Built-in dashboard widgets are stored in `dashboard_widgets`. A widget has a type, title, page/category placement, card size, sort order, enabled state, and validated JSON configuration. v0.14 ships clock, note, bookmarks, system-summary, service-status, and update-overview widgets. Widget configuration is data-only; the current Extension Manager does not execute third-party JavaScript, Python, CSS, or other arbitrary plugin code.
+Built-in dashboard widgets are stored in `dashboard_widgets`. A widget has a type, title, page/category placement, card size, sort order, enabled state, and validated JSON configuration. The built-in widget pack currently ships clock, note, bookmarks, system-summary, service-status, and update-overview widgets. Widget configuration is data-only; the current Extension Manager does not execute third-party JavaScript, Python, CSS, or other arbitrary plugin code.
 
 ## Layout model
 
 Dashboard structure is persisted server-side rather than only in browser local storage. `dashboard_pages` stores page/tab names and order. Every service and widget has a `page_id`, while `category_layouts` stores category order, collapsed state, and optional header icon separately for each page. Services and widgets share the same numeric sort space inside a category through the mixed dashboard-item reorder endpoint. `favorite` keeps service cards in a pinned group ahead of the normal mixed service/widget group, and `card_size` is one of `compact`, `standard`, or `wide`.
 
-The browser only keeps the most recently selected page ID as a convenience; the actual page/category/card structure remains portable across browsers and devices because it lives in SQLite. v0.14 also exposes a credential-free layout export/import format for sharing structure between installations; full backups still use `/app/data`.
+The browser only keeps the most recently selected page ID as a convenience; the actual page/category/card structure remains portable across browsers and devices because it lives in SQLite. v0.14 added a credential-free layout export/import format for sharing structure between installations. v0.16 additionally lets a single page be exported as a reusable data-only extension package; service secrets and management links are excluded. Full backups still use `/app/data`.
 
 
 ## Distribution model

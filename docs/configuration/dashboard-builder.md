@@ -64,3 +64,10 @@ This feature is for portable layout/templates, not a substitute for a full `/app
 ## Visual custom-theme editor
 
 Appearance now includes **Create custom theme**. The editor starts from the currently active theme and exposes the validated design-token colors. Saved themes use the same data-only theme package format as imported themes and still cannot run CSS or JavaScript.
+
+
+## Reusable page templates
+
+v0.16 lets a page become a distributable data-only extension. In Manage mode, edit a page and choose **Export template**. The exported JSON contains categories, service-card definitions, and supported widgets, but excludes API keys, passwords, management providers/targets, controller connections, and encrypted secrets.
+
+When adding a page, use **Start from** to choose a built-in template or a template supplied by an enabled imported extension. See [Extension packages](../extensions/packages.md).
