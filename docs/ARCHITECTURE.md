@@ -44,10 +44,10 @@ Credentials remain backend-only. API-key integrations use the existing encrypted
 
 Application integrations and management providers are intentionally separate. A Sonarr adapter can provide health, queue, and activity while a Docker Compose or TrueNAS provider controls how that Sonarr instance is updated. This avoids service/platform combinations such as separate Sonarr-Docker and Sonarr-TrueNAS adapters.
 
-Each service may optionally store a `management_provider`, provider target, and controller-service reference. v0.11 ships two providers:
+Each service may optionally store a `management_provider`, provider target, and reusable management-connection reference. v0.12 ships two providers:
 
 - **Docker Compose / Dockge:** the dashboard talks to an optional internal update-agent. The agent discovers Compose project/service labels from Docker, rejects projects outside an allow-listed stacks root, pulls the image, recreates only the selected Compose service, waits for Docker health/running state, and restores the previous image when health verification fails. Stack files are mounted read-only and the agent has no arbitrary shell-command API.
-- **TrueNAS Apps:** the backend talks to the selected TrueNAS card over the versioned JSON-RPC WebSocket API and invokes the TrueNAS app-management methods. TrueNAS remains the system of record for its apps; Homelab Dashboard does not manipulate the underlying app containers directly.
+- **TrueNAS Apps:** the backend talks through a reusable encrypted TrueNAS Connection over the versioned JSON-RPC WebSocket API and invokes the TrueNAS app-management methods. TrueNAS remains the system of record for its apps; Homelab Dashboard does not manipulate the underlying app containers directly. Visible TrueNAS cards are optional telemetry views, not credential controllers.
 
 Update state and history are stored in SQLite. Update work runs in background threads so browser/API requests return immediately and the frontend polls job progress. Update All is sequential and stops on failure.
 

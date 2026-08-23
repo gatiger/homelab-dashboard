@@ -44,7 +44,7 @@ UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 36
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.11.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.12.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -100,6 +100,7 @@ class ServiceBase(BaseModel):
     management_provider: Literal["none", "docker_compose", "truenas_app"] = "none"
     management_target: str | None = Field(default=None, max_length=300)
     management_controller_service_id: int | None = Field(default=None, ge=1)
+    management_connection_id: int | None = Field(default=None, ge=1)
 
     @field_validator("management_target")
     @classmethod
@@ -156,6 +157,49 @@ class Service(ServiceBase):
 class ServiceLayoutUpdate(BaseModel):
     favorite: bool | None = None
     card_size: Literal["compact", "standard", "wide"] | None = None
+
+
+class ManagementConnectionBase(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    type: Literal["truenas"] = "truenas"
+    url: HttpUrl
+    api_key: str | None = Field(default=None, max_length=512, exclude=True)
+    clear_api_key: bool = Field(default=False, exclude=True)
+    auth_username: str | None = Field(default=None, max_length=256, exclude=True)
+    clear_auth_username: bool = Field(default=False, exclude=True)
+
+    @field_validator("name")
+    @classmethod
+    def trim_connection_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Connection name cannot be blank")
+        return value
+
+
+class ManagementConnectionCreate(ManagementConnectionBase):
+    pass
+
+
+class ManagementConnectionUpdate(ManagementConnectionBase):
+    pass
+
+
+class ManagementConnection(BaseModel):
+    id: int
+    name: str
+    type: Literal["truenas"]
+    url: str
+    has_api_key: bool = False
+    has_auth_username: bool = False
+    used_by: int = 0
+    created_at: str
+    updated_at: str
+
+
+class ConnectionTestResult(BaseModel):
+    ok: bool
+    message: str
 
 
 class ServiceReorder(BaseModel):
@@ -485,6 +529,43 @@ def ensure_service_migrations(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE services ADD COLUMN management_target TEXT")
     if "management_controller_service_id" not in columns:
         connection.execute("ALTER TABLE services ADD COLUMN management_controller_service_id INTEGER")
+    if "management_connection_id" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN management_connection_id INTEGER")
+
+
+def migrate_legacy_truenas_connections(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """SELECT s.id AS service_id, s.management_controller_service_id AS controller_id
+           FROM services s
+           WHERE s.management_provider = 'truenas_app'
+             AND s.management_connection_id IS NULL
+             AND s.management_controller_service_id IS NOT NULL"""
+    ).fetchall()
+    for item in rows:
+        controller = connection.execute("SELECT * FROM services WHERE id = ?", (item["controller_id"],)).fetchone()
+        if not controller or controller["type"] != "truenas":
+            continue
+        existing = connection.execute(
+            "SELECT id FROM management_connections WHERE legacy_service_id = ?", (controller["id"],)
+        ).fetchone()
+        if existing:
+            connection_id = int(existing["id"])
+        else:
+            now = iso_now()
+            base_name = f"{controller['name']} connection"
+            name = base_name
+            suffix = 2
+            while connection.execute("SELECT 1 FROM management_connections WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+                name = f"{base_name} {suffix}"
+                suffix += 1
+            cursor = connection.execute(
+                """INSERT INTO management_connections
+                   (name, type, url, api_key_encrypted, auth_username_encrypted, legacy_service_id, created_at, updated_at)
+                   VALUES (?, 'truenas', ?, ?, ?, ?, ?, ?)""",
+                (name, controller["url"], controller["api_key_encrypted"], controller["auth_username_encrypted"], controller["id"], now, now),
+            )
+            connection_id = int(cursor.lastrowid)
+        connection.execute("UPDATE services SET management_connection_id = ? WHERE id = ?", (connection_id, item["service_id"]))
 
 
 def ensure_default_page(connection: sqlite3.Connection) -> None:
@@ -602,6 +683,18 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS management_connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                type TEXT NOT NULL DEFAULT 'truenas',
+                url TEXT NOT NULL,
+                api_key_encrypted TEXT,
+                auth_username_encrypted TEXT,
+                legacy_service_id INTEGER UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS services (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -621,6 +714,7 @@ def init_db() -> None:
                 management_provider TEXT NOT NULL DEFAULT 'none',
                 management_target TEXT,
                 management_controller_service_id INTEGER,
+                management_connection_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -657,6 +751,7 @@ def init_db() -> None:
             """
         )
         ensure_service_migrations(connection)
+        migrate_legacy_truenas_connections(connection)
         ensure_default_page(connection)
         connection.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme_id', 'system')")
         ensure_category_layouts(connection)
@@ -832,7 +927,8 @@ def row_to_service(row: sqlite3.Row) -> Service:
         clear_auth_credentials=False,
         management_provider=row["management_provider"] if row["management_provider"] in {"none", "docker_compose", "truenas_app"} else "none",
         management_target=row["management_target"],
-        management_controller_service_id=row["management_controller_service_id"],
+        management_controller_service_id=None if row["management_connection_id"] else row["management_controller_service_id"],
+        management_connection_id=row["management_connection_id"],
         has_api_key=bool(row["api_key_encrypted"]),
         has_auth_username=bool(row["auth_username_encrypted"]),
         has_auth_credentials=bool(row["auth_username_encrypted"] and row["auth_password_encrypted"]),
@@ -896,7 +992,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.11.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.12.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -963,7 +1059,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.11.0", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": "HomelabDashboard/0.12.0", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -1460,7 +1556,7 @@ def truenas_insight(service: Service, encrypted_key: str | None, encrypted_usern
         # TrueNAS 25.04+ uses the versioned JSON-RPC WebSocket API. Try it first
         # so the integration also works on TrueNAS 26+, where the old REST API
         # has been removed. The REST path below remains as a compatibility fallback.
-        with TrueNASRPC(service, key, username) as client:
+        with TrueNASRPC(str(service.url), key, username) as client:
             pools_raw = client.call("pool.query", [[], {}])
             alerts_ws = None
             try:
@@ -1629,8 +1725,8 @@ def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
 
 
 class TrueNASRPC:
-    def __init__(self, service: Service, api_key: str, username: str | None = None):
-        parsed = urlparse(str(service.url))
+    def __init__(self, service_url: str, api_key: str, username: str | None = None):
+        parsed = urlparse(str(service_url))
         if parsed.scheme.lower() != "https":
             raise RuntimeError("TrueNAS API-key management requires an HTTPS service URL")
         if not parsed.hostname:
@@ -1697,7 +1793,31 @@ def truenas_client_from_row(row: sqlite3.Row) -> TrueNASRPC:
     username = decrypt_secret(row["auth_username_encrypted"])
     if not api_key:
         raise RuntimeError("TrueNAS controller does not have an API key saved")
-    return TrueNASRPC(service, api_key, username)
+    return TrueNASRPC(str(service.url), api_key, username)
+
+
+def row_to_management_connection(row: sqlite3.Row, used_by: int = 0) -> ManagementConnection:
+    return ManagementConnection(
+        id=int(row["id"]), name=row["name"], type="truenas", url=row["url"],
+        has_api_key=bool(row["api_key_encrypted"]), has_auth_username=bool(row["auth_username_encrypted"]),
+        used_by=used_by, created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def get_management_connection_row(connection_id: int) -> sqlite3.Row:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM management_connections WHERE id = ?", (connection_id,)).fetchone()
+    if not row:
+        raise RuntimeError("Management connection not found")
+    return row
+
+
+def truenas_client_from_connection_row(row: sqlite3.Row) -> TrueNASRPC:
+    api_key = decrypt_secret(row["api_key_encrypted"])
+    username = decrypt_secret(row["auth_username_encrypted"])
+    if not api_key:
+        raise RuntimeError("TrueNAS connection does not have an API key saved")
+    return TrueNASRPC(str(row["url"]), api_key, username)
 
 
 def agent_request(path: str, method: str = "GET", payload: dict | None = None, timeout: float = 30) -> object:
@@ -1791,8 +1911,14 @@ def get_service_row(service_id: int) -> sqlite3.Row:
     return row
 
 
-def truenas_app_records(controller_row: sqlite3.Row) -> list[dict]:
-    with truenas_client_from_row(controller_row) as client:
+def truenas_app_records(controller_row: sqlite3.Row | None = None, connection_row: sqlite3.Row | None = None) -> list[dict]:
+    if connection_row is not None:
+        client_context = truenas_client_from_connection_row(connection_row)
+    elif controller_row is not None:
+        client_context = truenas_client_from_row(controller_row)
+    else:
+        raise RuntimeError("TrueNAS connection is not configured")
+    with client_context as client:
         raw = client.call("app.query", [[], {}])
     if not isinstance(raw, list):
         raise RuntimeError("Unexpected TrueNAS app query response")
@@ -1808,6 +1934,9 @@ def check_service_update(service_row: sqlite3.Row) -> ServiceUpdateState:
         result = ServiceUpdateState(service_id=service.id, provider=provider, target=target, state="unconfigured", checked_at=checked_at, message="Update management is not configured for this service")
         save_update_state(result)
         return result
+    save_update_state(ServiceUpdateState(
+        service_id=service.id, provider=provider, target=target, state="checking", checked_at=checked_at, message="Checking for updates"
+    ))
     try:
         if provider == "docker_compose":
             raw = agent_request("/v1/check", method="POST", payload={"resource_id": target}, timeout=UPDATE_JOB_TIMEOUT)
@@ -1820,11 +1949,14 @@ def check_service_update(service_row: sqlite3.Row) -> ServiceUpdateState:
                 message="Container image update available" if available else "Container image is current",
             )
         elif provider == "truenas_app":
-            controller_id = service.management_controller_service_id
-            if not controller_id:
-                raise RuntimeError("Choose a TrueNAS controller card for this app")
-            controller_row = get_service_row(controller_id)
-            apps = truenas_app_records(controller_row)
+            if service.management_connection_id:
+                connection_row = get_management_connection_row(service.management_connection_id)
+                apps = truenas_app_records(connection_row=connection_row)
+            elif service.management_controller_service_id:
+                controller_row = get_service_row(service.management_controller_service_id)
+                apps = truenas_app_records(controller_row=controller_row)
+            else:
+                raise RuntimeError("Choose a TrueNAS connection for this app")
             app_item = next((item for item in apps if str(item.get("id") or item.get("name")) == target), None)
             if not app_item:
                 raise RuntimeError(f"TrueNAS app {target!r} was not found")
@@ -1886,11 +2018,16 @@ def perform_docker_update(service: Service, job_id: str, start: int = 5, end: in
 
 
 def perform_truenas_update(service: Service, job_id: str, start: int = 5, end: int = 100) -> tuple[str | None, str | None, str]:
-    if not service.management_controller_service_id or not service.management_target:
+    if not service.management_target:
         raise RuntimeError("TrueNAS update target is incomplete")
-    controller_row = get_service_row(service.management_controller_service_id)
+    if service.management_connection_id:
+        client_context = truenas_client_from_connection_row(get_management_connection_row(service.management_connection_id))
+    elif service.management_controller_service_id:
+        client_context = truenas_client_from_row(get_service_row(service.management_controller_service_id))
+    else:
+        raise RuntimeError("TrueNAS connection is not configured")
     update_job(job_id, progress=start, message="Connecting to TrueNAS")
-    with truenas_client_from_row(controller_row) as client:
+    with client_context as client:
         before_raw = client.call("app.query", [[["id", "=", service.management_target]], {"get": True}])
         before = before_raw if isinstance(before_raw, dict) else {}
         current_version = str(before.get("human_version") or before.get("version") or "") or None
@@ -1982,6 +2119,86 @@ def batch_update_worker(job_id: str) -> None:
         update_job(job_id, state="failed", progress=100, message="Update-all stopped", detail=str(exc)[:1200], finished_at=iso_now())
 
 
+@app.get("/api/connections", response_model=list[ManagementConnection])
+def list_management_connections(_: SessionUser = Depends(require_auth)) -> list[ManagementConnection]:
+    with db() as connection:
+        rows = connection.execute("SELECT * FROM management_connections ORDER BY name COLLATE NOCASE").fetchall()
+        usage = {row["management_connection_id"]: int(row["count"]) for row in connection.execute(
+            "SELECT management_connection_id, COUNT(*) AS count FROM services WHERE management_connection_id IS NOT NULL GROUP BY management_connection_id"
+        ).fetchall()}
+    return [row_to_management_connection(row, usage.get(row["id"], 0)) for row in rows]
+
+
+@app.post("/api/connections", response_model=ManagementConnection, status_code=status.HTTP_201_CREATED)
+def create_management_connection(payload: ManagementConnectionCreate, _: SessionUser = Depends(require_write_auth)) -> ManagementConnection:
+    now = iso_now()
+    try:
+        with db() as connection:
+            cursor = connection.execute(
+                """INSERT INTO management_connections (name, type, url, api_key_encrypted, auth_username_encrypted, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (payload.name, payload.type, str(payload.url), encrypt_secret(payload.api_key), encrypt_secret(payload.auth_username), now, now),
+            )
+            row = connection.execute("SELECT * FROM management_connections WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A connection with that name already exists") from exc
+    return row_to_management_connection(row)
+
+
+@app.put("/api/connections/{connection_id}", response_model=ManagementConnection)
+def update_management_connection(connection_id: int, payload: ManagementConnectionUpdate, _: SessionUser = Depends(require_write_auth)) -> ManagementConnection:
+    now = iso_now()
+    try:
+        with db() as connection:
+            current = connection.execute("SELECT * FROM management_connections WHERE id = ?", (connection_id,)).fetchone()
+            if not current:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+            api_key = current["api_key_encrypted"]
+            username = current["auth_username_encrypted"]
+            if payload.clear_api_key:
+                api_key = None
+            elif payload.api_key:
+                api_key = encrypt_secret(payload.api_key)
+            if payload.clear_auth_username:
+                username = None
+            elif payload.auth_username:
+                username = encrypt_secret(payload.auth_username)
+            connection.execute(
+                "UPDATE management_connections SET name=?, type=?, url=?, api_key_encrypted=?, auth_username_encrypted=?, updated_at=? WHERE id=?",
+                (payload.name, payload.type, str(payload.url), api_key, username, now, connection_id),
+            )
+            row = connection.execute("SELECT * FROM management_connections WHERE id = ?", (connection_id,)).fetchone()
+            used_by = int(connection.execute("SELECT COUNT(*) FROM services WHERE management_connection_id = ?", (connection_id,)).fetchone()[0])
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A connection with that name already exists") from exc
+    return row_to_management_connection(row, used_by)
+
+
+@app.delete("/api/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_management_connection(connection_id: int, _: SessionUser = Depends(require_write_auth)) -> Response:
+    with db() as connection:
+        row = connection.execute("SELECT 1 FROM management_connections WHERE id = ?", (connection_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+        used_by = int(connection.execute("SELECT COUNT(*) FROM services WHERE management_connection_id = ?", (connection_id,)).fetchone()[0])
+        if used_by:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Connection is used by {used_by} managed service(s)")
+        connection.execute("DELETE FROM management_connections WHERE id = ?", (connection_id,))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/connections/{connection_id}/test", response_model=ConnectionTestResult)
+def test_management_connection(connection_id: int, _: SessionUser = Depends(require_write_auth)) -> ConnectionTestResult:
+    try:
+        row = get_management_connection_row(connection_id)
+        with truenas_client_from_connection_row(row) as client:
+            apps = client.call("app.query", [[], {}])
+        count = len(apps) if isinstance(apps, list) else 0
+        return ConnectionTestResult(ok=True, message=f"Connected to TrueNAS · {count} app(s) found")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
 @app.get("/api/management/docker/resources", response_model=list[ManagedResource])
 def docker_management_resources(_: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
     try:
@@ -1996,21 +2213,36 @@ def docker_management_resources(_: SessionUser = Depends(require_auth)) -> list[
     return resources
 
 
-@app.get("/api/management/truenas/{controller_service_id}/apps", response_model=list[ManagedResource])
-def truenas_management_apps(controller_service_id: int, _: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
-    try:
-        controller_row = get_service_row(controller_service_id)
-        if controller_row["type"] != "truenas":
-            raise RuntimeError("Selected controller service is not a TrueNAS card")
-        apps = truenas_app_records(controller_row)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+def truenas_resources_from_apps(apps: list[dict]) -> list[ManagedResource]:
     return [ManagedResource(
         id=str(item.get("id") or item.get("name")), name=str(item.get("name") or item.get("id")), provider="truenas_app",
         current_version=str(item.get("human_version") or item.get("version") or "") or None,
         latest_version=str(item.get("latest_human_version") or item.get("latest_version") or "") or None,
         update_available=bool(item.get("upgrade_available") or item.get("image_updates_available")), state=str(item.get("state") or "") or None,
     ) for item in apps]
+
+
+@app.get("/api/management/truenas/connections/{connection_id}/apps", response_model=list[ManagedResource])
+def truenas_management_connection_apps(connection_id: int, _: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
+    try:
+        connection_row = get_management_connection_row(connection_id)
+        apps = truenas_app_records(connection_row=connection_row)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return truenas_resources_from_apps(apps)
+
+
+@app.get("/api/management/truenas/{controller_service_id}/apps", response_model=list[ManagedResource])
+def truenas_management_apps(controller_service_id: int, _: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
+    # Backward-compatible v0.11 route. New configurations use management connections.
+    try:
+        controller_row = get_service_row(controller_service_id)
+        if controller_row["type"] != "truenas":
+            raise RuntimeError("Selected controller service is not a TrueNAS card")
+        apps = truenas_app_records(controller_row=controller_row)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return truenas_resources_from_apps(apps)
 
 
 @app.get("/api/updates/status", response_model=list[ServiceUpdateState])
@@ -2094,7 +2326,7 @@ def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[Inte
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.11.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.12.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -2428,8 +2660,8 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
         ensure_category_layout(connection, service.page_id, service.category)
         cursor = connection.execute(
             """
-            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service.name,
@@ -2449,6 +2681,7 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
                 service.management_provider,
                 service.management_target,
                 service.management_controller_service_id,
+                service.management_connection_id,
                 now,
                 now,
             ),
@@ -2461,7 +2694,7 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
 def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Depends(require_write_auth)) -> Service:
     now = iso_now()
     with db() as connection:
-        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id FROM services WHERE id = ?", (service_id,)).fetchone()
+        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id FROM services WHERE id = ?", (service_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
         require_page(connection, service.page_id)
@@ -2490,7 +2723,7 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
         connection.execute(
             """
             UPDATE services
-            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, management_provider = ?, management_target = ?, management_controller_service_id = ?, updated_at = ?
+            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, management_provider = ?, management_target = ?, management_controller_service_id = ?, management_connection_id = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -2511,11 +2744,12 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
                 service.management_provider,
                 service.management_target,
                 service.management_controller_service_id,
+                service.management_connection_id,
                 now,
                 service_id,
             ),
         )
-        if (service.management_provider != current["management_provider"] or service.management_target != current["management_target"] or service.management_controller_service_id != current["management_controller_service_id"]):
+        if (service.management_provider != current["management_provider"] or service.management_target != current["management_target"] or service.management_controller_service_id != current["management_controller_service_id"] or service.management_connection_id != current["management_connection_id"]):
             connection.execute("DELETE FROM service_update_state WHERE service_id = ?", (service_id,))
         row = connection.execute("SELECT * FROM services WHERE id = ?", (service_id,)).fetchone()
     return row_to_service(row)

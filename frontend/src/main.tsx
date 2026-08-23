@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
   ChevronRight,
+  Cable,
   Download,
   ArrowUpCircle,
   History,
@@ -55,6 +56,7 @@ type Service = {
   management_provider: "none" | "docker_compose" | "truenas_app";
   management_target?: string | null;
   management_controller_service_id?: number | null;
+  management_connection_id?: number | null;
 };
 
 type ServiceForm = {
@@ -77,6 +79,7 @@ type ServiceForm = {
   management_provider: "none" | "docker_compose" | "truenas_app";
   management_target: string;
   management_controller_service_id: number | null;
+  management_connection_id: number | null;
 };
 
 type DashboardPage = {
@@ -153,6 +156,23 @@ type UpdateJob = {
   finished_at?: string | null;
 };
 
+type ManagementConnection = {
+  id: number;
+  name: string;
+  type: "truenas";
+  url: string;
+  has_api_key: boolean;
+  has_auth_username: boolean;
+  used_by: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type ConnectionTestResult = {
+  ok: boolean;
+  message: string;
+};
+
 type ManagedResource = {
   id: string;
   name: string;
@@ -173,7 +193,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.11.0";
+const APP_VERSION = "0.12.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -195,6 +215,7 @@ const EMPTY_SERVICE: ServiceForm = {
   management_provider: "none",
   management_target: "",
   management_controller_service_id: null,
+  management_connection_id: null,
 };
 
 const API_KEY_INTEGRATIONS: Record<string, { label: string; hint: string }> = {
@@ -454,6 +475,7 @@ function ServiceModal({
   pages,
   defaultPageId,
   allServices,
+  connections,
 }: {
   service: Service | null;
   template?: CatalogEntry | null;
@@ -464,6 +486,7 @@ function ServiceModal({
   pages: DashboardPage[];
   defaultPageId: number;
   allServices: Service[];
+  connections: ManagementConnection[];
 }) {
   const initialTemplate = template ?? (service ? CATALOG_BY_TYPE[service.type] : null);
   const [form, setForm] = useState<ServiceForm>(service ? {
@@ -486,6 +509,7 @@ function ServiceModal({
     management_provider: service.management_provider ?? "none",
     management_target: service.management_target ?? "",
     management_controller_service_id: service.management_controller_service_id ?? null,
+    management_connection_id: service.management_connection_id ?? null,
   } : initialTemplate ? {
     name: ["link", "other"].includes(initialTemplate.type) ? "" : initialTemplate.name,
     type: initialTemplate.type,
@@ -506,6 +530,7 @@ function ServiceModal({
     management_provider: "none",
     management_target: "",
     management_controller_service_id: null,
+    management_connection_id: null,
   } : { ...EMPTY_SERVICE, page_id: defaultPageId });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -513,19 +538,20 @@ function ServiceModal({
   const [resourceLoading, setResourceLoading] = useState(false);
   const [resourceError, setResourceError] = useState("");
   const selectedCatalogEntry = CATALOG_BY_TYPE[form.type];
-  const trueNasControllers = allServices.filter((item) => item.type === "truenas" && item.id !== service?.id);
+  // allServices is retained for compatibility with existing editor behavior; management controllers now use Connections.
+  void allServices;
 
   useEffect(() => {
     let cancelled = false;
     async function loadManagedResources() {
       if (form.management_provider === "none") { setManagedResources([]); setResourceError(""); return; }
-      if (form.management_provider === "truenas_app" && !form.management_controller_service_id) { setManagedResources([]); return; }
+      if (form.management_provider === "truenas_app" && !form.management_connection_id) { setManagedResources([]); setResourceError(""); return; }
       setResourceLoading(true);
       setResourceError("");
       try {
         const path = form.management_provider === "docker_compose"
           ? "/api/management/docker/resources"
-          : `/api/management/truenas/${form.management_controller_service_id}/apps`;
+          : `/api/management/truenas/connections/${form.management_connection_id}/apps`;
         const resources = await api<ManagedResource[]>(path);
         if (!cancelled) setManagedResources(resources);
       } catch (err) {
@@ -536,7 +562,7 @@ function ServiceModal({
     }
     void loadManagedResources();
     return () => { cancelled = true; };
-  }, [form.management_provider, form.management_controller_service_id]);
+  }, [form.management_provider, form.management_connection_id]);
 
   function setField<K extends keyof ServiceForm>(key: K, value: ServiceForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -719,7 +745,13 @@ function ServiceModal({
                 <span>Managed by</span>
                 <select value={form.management_provider} onChange={(event) => {
                   const provider = event.target.value as ServiceForm["management_provider"];
-                  setForm((current) => ({ ...current, management_provider: provider, management_target: "", management_controller_service_id: provider === "truenas_app" ? current.management_controller_service_id : null }));
+                  setForm((current) => ({
+                    ...current,
+                    management_provider: provider,
+                    management_target: "",
+                    management_controller_service_id: null,
+                    management_connection_id: provider === "truenas_app" ? current.management_connection_id : null,
+                  }));
                 }}>
                   <option value="none">Not managed / detect only</option>
                   <option value="docker_compose">Docker Compose / Dockge</option>
@@ -728,17 +760,18 @@ function ServiceModal({
               </label>
               {form.management_provider === "truenas_app" && (
                 <label>
-                  <span>TrueNAS controller</span>
-                  <select value={form.management_controller_service_id ?? ""} onChange={(event) => setForm((current) => ({ ...current, management_controller_service_id: event.target.value ? Number(event.target.value) : null, management_target: "" }))}>
-                    <option value="">Choose a TrueNAS card…</option>
-                    {trueNasControllers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  <span>TrueNAS connection</span>
+                  <select value={form.management_connection_id ?? ""} onChange={(event) => setForm((current) => ({ ...current, management_connection_id: event.target.value ? Number(event.target.value) : null, management_controller_service_id: null, management_target: "" }))}>
+                    <option value="">Choose a TrueNAS connection…</option>
+                    {connections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                   </select>
+                  {connections.length === 0 && <small className="field-error">Add a TrueNAS connection from Connections first.</small>}
                 </label>
               )}
               {form.management_provider !== "none" && (
                 <label className={form.management_provider === "docker_compose" ? "span-2" : "span-2"}>
                   <span>{form.management_provider === "docker_compose" ? "Compose service" : "TrueNAS app"}</span>
-                  <select value={form.management_target} onChange={(event) => setField("management_target", event.target.value)} disabled={resourceLoading || (form.management_provider === "truenas_app" && !form.management_controller_service_id)}>
+                  <select value={form.management_target} onChange={(event) => setField("management_target", event.target.value)} disabled={resourceLoading || (form.management_provider === "truenas_app" && !form.management_connection_id)}>
                     <option value="">{resourceLoading ? "Discovering…" : "Choose managed service…"}</option>
                     {managedResources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name}{resource.current_version ? ` · ${resource.current_version}` : ""}</option>)}
                   </select>
@@ -1000,6 +1033,90 @@ function inferredServiceType(service: Service): string | null {
   return null;
 }
 
+function ConnectionsModal({ connections, csrfToken, onClose, onChanged }: { connections: ManagementConnection[]; csrfToken?: string | null; onClose: () => void; onChanged: () => Promise<void> | void }) {
+  const blank = { name: "", url: "https://", api_key: "", auth_username: "", clear_api_key: false, clear_auth_username: false };
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [form, setForm] = useState(blank);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  function startAdd() { setEditingId(null); setForm(blank); setError(""); setMessage(""); }
+  function startEdit(connection: ManagementConnection) {
+    setEditingId(connection.id);
+    setForm({ name: connection.name, url: connection.url, api_key: "", auth_username: "", clear_api_key: false, clear_auth_username: false });
+    setError(""); setMessage("");
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(""); setMessage("");
+    try {
+      await api<ManagementConnection>(editingId ? `/api/connections/${editingId}` : "/api/connections", {
+        method: editingId ? "PUT" : "POST",
+        body: JSON.stringify({ ...form, type: "truenas", api_key: form.api_key.trim() || null, auth_username: form.auth_username.trim() || null }),
+      }, csrfToken);
+      await onChanged();
+      setMessage(editingId ? "Connection saved." : "Connection added.");
+      if (!editingId) setForm(blank);
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to save connection."); }
+    finally { setBusy(false); }
+  }
+
+  async function test(connection: ManagementConnection) {
+    setBusy(true); setError(""); setMessage("");
+    try { const result = await api<ConnectionTestResult>(`/api/connections/${connection.id}/test`, { method: "POST" }, csrfToken); setMessage(result.message); }
+    catch (err) { setError(err instanceof Error ? err.message : "Connection test failed."); }
+    finally { setBusy(false); }
+  }
+
+  async function remove(connection: ManagementConnection) {
+    if (!window.confirm(`Delete the ${connection.name} connection?`)) return;
+    setBusy(true); setError(""); setMessage("");
+    try { await api<void>(`/api/connections/${connection.id}`, { method: "DELETE" }, csrfToken); await onChanged(); if (editingId === connection.id) startAdd(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Unable to delete connection."); }
+    finally { setBusy(false); }
+  }
+
+  const editing = connections.find((item) => item.id === editingId);
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
+      <section className="modal connections-modal" role="dialog" aria-modal="true" aria-labelledby="connections-title">
+        <header className="modal-header">
+          <div><p className="eyebrow">CONNECTIONS</p><h2 id="connections-title">Management connections</h2><p className="modal-subhead">Store controller credentials once, then reuse them for managed services. Connections do not have to appear as dashboard cards.</p></div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button>
+        </header>
+        <div className="connections-layout">
+          <div className="connections-list">
+            <button className={`connection-list-item ${editingId === null ? "active" : ""}`} type="button" onClick={startAdd}><Plus size={16} /><span><strong>Add connection</strong><small>New TrueNAS controller</small></span></button>
+            {connections.map((connection) => (
+              <button className={`connection-list-item ${editingId === connection.id ? "active" : ""}`} type="button" key={connection.id} onClick={() => startEdit(connection)}>
+                <Cable size={16} /><span><strong>{connection.name}</strong><small>{connection.used_by} managed service{connection.used_by === 1 ? "" : "s"}</small></span>
+              </button>
+            ))}
+          </div>
+          <form className="connection-form" onSubmit={save}>
+            <h3>{editing ? `Edit ${editing.name}` : "Add TrueNAS connection"}</h3>
+            <label><span>Name</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="Home TrueNAS" required /></label>
+            <label><span>TrueNAS URL</span><input type="url" value={form.url} onChange={(event) => setForm((current) => ({ ...current, url: event.target.value }))} placeholder="https://192.168.1.10" required /><small>Use the HTTPS address reachable from the dashboard container.</small></label>
+            <label><span>API key {editing?.has_api_key && <small>saved — leave blank to keep</small>}</span><input type="password" value={form.api_key} onChange={(event) => setForm((current) => ({ ...current, api_key: event.target.value }))} placeholder={editing?.has_api_key ? "API key saved" : "TrueNAS API key"} autoComplete="off" required={!editing} /></label>
+            <label><span>API-key username <small>optional</small></span><input value={form.auth_username} onChange={(event) => setForm((current) => ({ ...current, auth_username: event.target.value }))} placeholder={editing?.has_auth_username ? "Username saved — leave blank to keep" : "API key owner username"} autoComplete="off" /></label>
+            {editing?.has_api_key && <label className="check-row"><input type="checkbox" checked={form.clear_api_key} onChange={(event) => setForm((current) => ({ ...current, clear_api_key: event.target.checked }))} /><span>Remove saved API key</span></label>}
+            {editing?.has_auth_username && <label className="check-row"><input type="checkbox" checked={form.clear_auth_username} onChange={(event) => setForm((current) => ({ ...current, clear_auth_username: event.target.checked }))} /><span>Remove saved username</span></label>}
+            {error && <div className="notice compact">{error}</div>}
+            {message && <div className="connection-success">{message}</div>}
+            <div className="connection-actions">
+              {editing && <button className="secondary" type="button" disabled={busy} onClick={() => void test(editing)}>Test connection</button>}
+              {editing && <button className="danger-button" type="button" disabled={busy || editing.used_by > 0} title={editing.used_by > 0 ? "Remove this connection from managed services before deleting it" : undefined} onClick={() => void remove(editing)}>Delete</button>}
+              <span className="action-spacer" />
+              <button className="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save connection"}</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function UpdateManagerModal({
   services,
   states,
@@ -1056,7 +1173,7 @@ function UpdateManagerModal({
                 <div className="update-row-main">
                   <div className="update-row-title"><ServiceIcon service={service} /><div><strong>{service.name}</strong><small>{service.management_provider === "docker_compose" ? "Docker Compose / Dockge" : "TrueNAS App"}</small></div></div>
                   <div className={`update-state update-state-${state?.state ?? "unknown"}`}>
-                    {state?.state === "available" ? "Update available" : state?.state === "current" ? "Up to date" : state?.state === "unavailable" ? "Check failed" : state?.state === "unknown" ? "Not checked" : "Not configured"}
+                    {state?.state === "available" ? "Update available" : state?.state === "current" ? "Up to date" : state?.state === "checking" ? "Checking…" : state?.state === "unavailable" ? "Check failed" : state?.state === "unknown" ? "Not checked" : "Not configured"}
                   </div>
                   {(state?.current_version || state?.latest_version) && <small className="version-line">{state.current_version ?? "?"}{state.latest_version && state.latest_version !== state.current_version ? ` → ${state.latest_version}` : ""}</small>}
                   {state?.message && <small>{state.message}</small>}
@@ -1073,6 +1190,31 @@ function UpdateManagerModal({
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function CardManagementStatus({ service, state, job, manageMode, onUpdate }: { service: Service; state?: ServiceUpdateState; job?: UpdateJob; manageMode: boolean; onUpdate: (service: Service) => void }) {
+  if (service.management_provider === "none") return <div className="card-management-slot card-management-empty" aria-hidden="true"><span>Management not configured</span></div>;
+  if (job) return (
+    <div className="card-management-slot card-management-running">
+      <div className="management-status-line management-checking"><span className="management-status-dot" /><strong>{job.message || "Updating…"}</strong><small>{job.progress}%</small></div>
+      <div className="activity-track"><span className="activity-bar" style={{ width: `${job.progress}%` }} /></div>
+    </div>
+  );
+  const current = state?.state ?? "unknown";
+  const label = current === "current" ? "Up to date"
+    : current === "available" ? "Update available"
+      : current === "checking" ? "Checking for updates…"
+        : current === "unavailable" ? "Update check failed"
+          : current === "unconfigured" ? "Update management incomplete" : "Update status not checked";
+  const version = state?.latest_version && state.latest_version !== state.current_version
+    ? `${state.current_version ?? "?"} → ${state.latest_version}`
+    : state?.current_version ?? null;
+  return (
+    <div className={`card-management-slot management-${current}`} title={state?.message ?? label}>
+      <div className={`management-status-line management-${current}`}><span className="management-status-dot" /><strong>{label}</strong>{version && <small className="management-version">{version}</small>}</div>
+      {current === "available" && !manageMode && <button className="card-update-action" type="button" onClick={() => onUpdate(service)}><ArrowUpCircle size={14} /> Update</button>}
     </div>
   );
 }
@@ -1110,6 +1252,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [appearanceBusy, setAppearanceBusy] = useState(false);
   const [appearanceError, setAppearanceError] = useState("");
+  const [connections, setConnections] = useState<ManagementConnection[]>([]);
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [updateStates, setUpdateStates] = useState<Record<number, ServiceUpdateState>>({});
   const [updateJobs, setUpdateJobs] = useState<UpdateJob[]>([]);
@@ -1177,6 +1321,11 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     }
   }
 
+  async function loadConnections() {
+    try { setConnections(await api<ManagementConnection[]>("/api/connections")); }
+    catch { /* Management connections are optional. */ }
+  }
+
   async function loadUpdateData() {
     try {
       const [statesResult, jobsResult] = await Promise.all([
@@ -1230,12 +1379,21 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   useEffect(() => {
-    void Promise.all([loadServices(), loadStructure(), loadAppearance(), loadUpdateData()]);
+    void Promise.all([loadServices(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData()]);
     void refreshTelemetry();
-    const telemetryTimer = window.setInterval(() => { void refreshTelemetry(); }, 30000);
-    const updateTimer = window.setInterval(() => { void loadUpdateData(); }, 2500);
-    return () => { window.clearInterval(telemetryTimer); window.clearInterval(updateTimer); };
+    const telemetryTimer = window.setInterval(() => { void refreshTelemetry(); }, 15000);
+    const updateTimer = window.setInterval(() => { void loadUpdateData(); }, 15000);
+    const onVisible = () => { if (document.visibilityState === "visible") { void refreshTelemetry(); void loadUpdateData(); } };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { window.clearInterval(telemetryTimer); window.clearInterval(updateTimer); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
+
+  const hasActiveUpdateJob = updateJobs.some((job) => job.state === "queued" || job.state === "running");
+  useEffect(() => {
+    if (!hasActiveUpdateJob) return;
+    const activeTimer = window.setInterval(() => { void loadUpdateData(); void refreshTelemetry(); }, 2500);
+    return () => window.clearInterval(activeTimer);
+  }, [hasActiveUpdateJob]);
 
   useEffect(() => {
     const applySelected = () => applyTheme(resolveTheme(appearance.theme_id, appearance.custom_themes), appearance.theme_id);
@@ -1487,6 +1645,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
         <div className="hero-actions">
           <button className="secondary updates-button" type="button" onClick={() => { setUpdatesOpen(true); void loadUpdateData(); }}><ArrowUpCircle size={17} /> Updates{Object.values(updateStates).filter((item) => item.state === "available").length > 0 && <span className="update-badge">{Object.values(updateStates).filter((item) => item.state === "available").length}</span>}</button>
           <button className="secondary" type="button" onClick={() => { setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={17} /> Appearance</button>
+          <button className="secondary" type="button" onClick={() => { setConnectionsOpen(true); void loadConnections(); }}><Cable size={17} /> Connections</button>
           <button className={`secondary ${manageMode ? "active" : ""}`} type="button" onClick={() => setManageMode((value) => !value)}><Settings size={17} /> {manageMode ? "Done" : "Manage"}</button>
           <button className="secondary" type="button" onClick={onLogout}><LogOut size={17} /> Sign out</button>
           <button className="primary" type="button" onClick={beginAdd}><Plus size={18} /> Add service</button>
@@ -1631,25 +1790,19 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                         <div className="icon" aria-hidden="true"><ServiceIcon service={service} /></div>
                         <div className="card-copy"><h3>{service.name}</h3><p>{TYPE_LABELS[service.type] ?? service.type}</p></div>
                         <span className={`status status-${serviceStatus.state}`} title={serviceStatus.title}><span />{serviceStatus.label}</span>
-                        {insight && insight.state !== "none" && (
-                          <div className={`insight insight-${insight.state}`}>
-                            {insight.summary && <strong>{insight.summary}</strong>}
-                            {insight.secondary && <span>{insight.secondary}</span>}
-                            {insight.activities?.[0] && <ActivityProgress activity={insight.activities[0]} additional={Math.max(0, insight.activities.length - 1)} />}
-                            {insight.items.slice(0, 2).map((item) => <span className="insight-item" key={item}>{item}</span>)}
-                          </div>
-                        )}
+                        <div className={`card-detail-slot ${insight && insight.state !== "none" ? "has-detail" : "empty-detail"}`}>
+                          {insight && insight.state !== "none" && (
+                            <div className={`insight insight-${insight.state}`}>
+                              {insight.summary && <strong>{insight.summary}</strong>}
+                              {insight.secondary && <span>{insight.secondary}</span>}
+                              {insight.activities?.[0] && <ActivityProgress activity={insight.activities[0]} additional={Math.max(0, insight.activities.length - 1)} />}
+                              {insight.items.slice(0, 2).map((item) => <span className="insight-item" key={item}>{item}</span>)}
+                            </div>
+                          )}
+                        </div>
                         <ExternalLink className="external" size={17} />
                       </a>
-                      {updateJob && (
-                        <div className="card-update-progress">
-                          <div className="activity-heading"><strong>{updateJob.message}</strong><span>{updateJob.progress}%</span></div>
-                          <div className="activity-track"><span className="activity-bar" style={{ width: `${updateJob.progress}%` }} /></div>
-                        </div>
-                      )}
-                      {!updateJob && updateState?.state === "available" && !manageMode && (
-                        <button className="card-update-button" type="button" onClick={() => void startManagedUpdate(service)}><ArrowUpCircle size={15} /> Update{updateState.latest_version ? ` to ${updateState.latest_version}` : " available"}</button>
-                      )}
+                      <CardManagementStatus service={service} state={updateState} job={updateJob} manageMode={manageMode} onUpdate={(item) => void startManagedUpdate(item)} />
                       {manageMode && (
                         <div className="card-controls">
                           <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : "Drag to reorder"} aria-hidden="true"><GripVertical size={15} /></span>
@@ -1685,6 +1838,10 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
         />
       )}
 
+      {connectionsOpen && (
+        <ConnectionsModal connections={connections} csrfToken={auth.csrf_token} onClose={() => setConnectionsOpen(false)} onChanged={async () => { await loadConnections(); await loadServices(); }} />
+      )}
+
       {appearanceOpen && (
         <AppearanceModal
           appearance={appearance}
@@ -1707,8 +1864,9 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           pages={pages}
           defaultPageId={activePageId}
           allServices={services}
+          connections={connections}
           onClose={closeEditor}
-          onSaved={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}
+          onSaved={() => { closeEditor(); void loadServices(); void loadStructure(); void loadConnections(); void refreshTelemetry(); void loadUpdateData(); }}
           onDeleted={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}
         />
       )}

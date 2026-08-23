@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.11.0
+ghcr.io/gatiger/homelab-dashboard:0.12.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -82,6 +82,9 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Open-ended service identifiers for future templates/plugins
 - Shared integration capability/activity model for progress-aware service cards
 - Update Manager with one-click Docker Compose/Dockge and TrueNAS App updates
+- Reusable management Connections so platform credentials do not require visible controller cards
+- Standardized managed-card update indicators with glowing current/available/error states
+- Automatic in-browser telemetry/update-state refresh without manually reloading the page
 - Sequential Update All, health verification, update history, and Docker rollback on failed health checks
 
 
@@ -89,7 +92,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 
 The **Updates** screen can discover and apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers (for example Docker Compose or TrueNAS Apps), so the same service can be monitored one way and updated another.
 
-TrueNAS App updates use the configured TrueNAS card and API key directly. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
+TrueNAS App updates use a reusable TrueNAS Connection (URL + encrypted API credentials), so no visible TrueNAS dashboard card is required. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
 
 ```bash
 docker compose -f compose.yaml -f compose.management.yaml up -d
@@ -174,7 +177,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Project status / roadmap
 
-v0.11 adds the Update Manager and management-provider architecture. A service can use its native API for status/activity while Docker Compose, Dockge, TrueNAS, or future providers independently handle lifecycle updates. Future work includes widgets, broader import/export, SSO options, more management providers, and a permission-aware plugin model.
+v0.12 adds reusable management Connections, standardized live/update status regions on cards, glowing semantic update indicators, and automatic in-browser refresh. Application integrations remain separate from Docker/TrueNAS lifecycle management. Future work includes widgets, broader import/export, SSO options, more management providers, and a permission-aware plugin model.
 
 See [CHANGELOG.md](CHANGELOG.md), [ROADMAP](docs/ROADMAP.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 

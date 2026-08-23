@@ -4,6 +4,25 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.12.0] - 2026-08-22
+
+### Added
+- Reusable management Connections, starting with TrueNAS, so controller credentials no longer require a visible dashboard card.
+- Automatic migration of v0.11 TrueNAS controller-card references into reusable TrueNAS Connections.
+- Consistent managed-card update status row with glowing semantic states for current, available, checking, and failed checks.
+- Card-level update version information and one-click Update action in a fixed management position.
+- Automatic browser refresh for service telemetry and cached update state, with faster polling while an update job is active and immediate refresh when the tab becomes visible again.
+- TrueNAS connection test workflow and safe connection deletion guard when services still reference it.
+
+### Changed
+- Standard/Wide service cards reserve consistent detail and management regions so common status information stays aligned across services.
+- TrueNAS App management now selects a reusable TrueNAS Connection instead of selecting a TrueNAS service card.
+- Normal browser polling is 15 seconds; active update jobs refresh about every 2.5 seconds. Server-side update discovery remains 12 hours by default and configurable with `UPDATE_CHECK_INTERVAL_HOURS`.
+
+### Security
+- TrueNAS connection API keys and usernames remain encrypted at rest and are never returned to the browser.
+- Existing Docker update-agent isolation and CSRF protections are unchanged.
+
 ## [0.11.0] - 2026-08-22
 
 ### Added

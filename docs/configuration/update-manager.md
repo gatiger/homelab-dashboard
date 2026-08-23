@@ -1,12 +1,12 @@
 # Update Manager
 
-Homelab Dashboard v0.11 separates **application integrations** from **management providers**. A service such as Sonarr can use the Sonarr API for health/queue information while Docker Compose, Dockge, or TrueNAS independently controls how that instance is updated.
+Homelab Dashboard v0.12 separates **application integrations** from **management providers**. A service such as Sonarr can use the Sonarr API for health/queue information while Docker Compose, Dockge, or TrueNAS independently controls how that instance is updated.
 
 ## User experience
 
 1. Edit a service card and choose **Managed by**.
 2. Link it to a discovered Docker Compose service or TrueNAS App.
-3. Open **Updates** and choose **Check for updates** (automatic checks run every 12 hours by default).
+3. Open **Updates** and choose **Check for updates** (server-side automatic checks run every 12 hours by default). Open dashboard tabs refresh cached card state automatically without a page reload.
 4. Click **Update** on a card or in the Updates screen. The work runs in the background and progress is shown in Homelab Dashboard.
 5. **Update all** applies currently available updates sequentially and stops if one fails.
 
@@ -53,13 +53,13 @@ Docker socket access is still powerful. Treat the update-agent as a privileged h
 
 ### Update discovery and mutable tags
 
-The first Docker provider uses `docker pull` during an update check. Pulling an image does **not** restart the running container. Homelab Dashboard compares the running container image ID with the newly pulled local image ID; when they differ, the card is marked **Update available**. This does not depend on a particular registry API. v0.11 targets public container registries; dedicated private-registry credential support is planned for a later provider enhancement.
+The first Docker provider uses `docker pull` during an update check. Pulling an image does **not** restart the running container. Homelab Dashboard compares the running container image ID with the newly pulled local image ID; when they differ, the card is marked **Update available**. This does not depend on a particular registry API. v0.12 targets public container registries; dedicated private-registry credential support is planned for a later provider enhancement.
 
 ## TrueNAS Apps provider
 
-Create/configure a normal TrueNAS card first and save its API key. For current TrueNAS releases, an API-key owner username is also supported/recommended. The TrueNAS card URL must use HTTPS.
+Open **Connections** and create a TrueNAS Connection containing the TrueNAS HTTPS URL and API key. An API-key owner username is also supported/recommended for current TrueNAS releases. The connection is reusable and does not create or require a visible dashboard card.
 
-When another service is set to **Managed by → TrueNAS App**, select that TrueNAS card as the controller and choose one of the apps returned by `app.query`.
+When a service is set to **Managed by → TrueNAS App**, select the TrueNAS Connection and choose one of the apps returned by `app.query`. Existing v0.11 controller-card links are migrated automatically on first v0.12 startup.
 
 Homelab Dashboard uses the TrueNAS versioned JSON-RPC WebSocket API to:
 
@@ -85,7 +85,7 @@ Docker checks may download changed image layers even if you do not immediately r
 
 ## Current provider coverage
 
-v0.11 ships:
+v0.12 ships:
 
 - Docker Compose / Dockge
 - TrueNAS Apps

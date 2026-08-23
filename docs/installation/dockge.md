@@ -28,7 +28,7 @@ Docker insight is optional. A Dockge card still works as a normal monitored link
 
 Pull/recreate the stack using the same Compose configuration. Do not remove the `homelab-dashboard-data` volume.
 
-## Optional v0.11 one-click updates
+## Optional v0.12 one-click updates
 
 Homelab Dashboard can update Compose/Dockge-managed services without opening Dockge, but this is deliberately opt-in because it requires Docker write privileges.
 

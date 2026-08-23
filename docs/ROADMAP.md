@@ -113,7 +113,20 @@
 - Automatic/manual update checks ✅
 - Additional providers such as Portainer, Unraid, Synology, and Kubernetes 🚧
 
-## Milestone 12 — Advanced dashboard builder
+## Milestone 12 — Live cards and management connections ✅
+
+- Reusable controller Connections independent of visible service cards
+- Automatic migration of v0.11 TrueNAS controller-card references
+- TrueNAS connection testing and encrypted credential reuse
+- Standardized card regions for connectivity, application detail/activity, and management/update state
+- Bright green/glowing **Up to date** state
+- Bright amber/glowing **Update available** state with card-level Update action
+- Red/glowing failed-update-check state and blue checking state
+- Automatic 15-second browser refresh for telemetry/update state without page reloads
+- Faster refresh while update jobs are active and refresh-on-tab-return
+- Server-side scheduled update discovery remains configurable (12 hours by default)
+
+## Milestone 13 — Advanced dashboard builder
 
 - Proper Settings area
 - Custom theme editor
@@ -123,7 +136,7 @@
 - Dashboard cloning/templates
 - Optional widgets
 
-## Milestone 13 — Open extension platform
+## Milestone 14 — Open extension platform
 
 - Versioned extension manifest
 - Permission/capability model
