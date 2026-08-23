@@ -41,3 +41,8 @@ TrueNAS updates are sent to TrueNAS itself through its authenticated JSON-RPC We
 General extension packages are schema-validated JSON. The v0.16 runtime accepts only page-template and service-catalog registration capabilities. Unknown fields and unknown permissions are rejected; imported packages cannot execute code or receive Docker, saved-secret, arbitrary network, or host-filesystem access.
 
 Page-template exports exclude service API keys, saved usernames/passwords, management-provider links/targets, and encrypted secrets. Templates can intentionally contain normal card URLs, bookmark URLs, and note/widget content, so authors should still review a package before publishing it publicly.
+
+
+## Extension registry
+
+v0.17 registry indexes are fetched over HTTPS. Package paths must remain on the same HTTPS origin as the configured registry index, and every package is verified against the SHA-256 digest published in that index before its manifest is parsed or installed. Registry metadata is not a substitute for a code-signing system: compromise of the registry origin could replace both a package and its checksum. For that reason, the current runtime still accepts data-only manifests with a narrow permission allow-list and does not execute third-party code. Package signing/transparency are future hardening areas before executable extensions are considered.

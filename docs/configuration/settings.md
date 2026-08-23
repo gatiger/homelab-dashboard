@@ -64,4 +64,4 @@ Imported themes can be removed from the manager. v0.15 does **not** execute arbi
 
 ## Extensions
 
-Settings → Extensions inventories built-in modules, themes, and imported extension packages. v0.16 can import validated data-only page-template and service-catalog packs. Imported packs show their declared capabilities and permissions and can be enabled, disabled, or removed. Executable third-party plugins remain disabled.
+Settings → Extensions inventories built-in modules, themes, and imported extension packages. v0.17 also browses the configured extension registry, shows trust/compatibility metadata, checks for newer package versions, and installs or updates checksum-verified data-only page-template/service-catalog packs. Manual JSON import remains available if the registry is offline. Executable third-party plugins remain disabled.

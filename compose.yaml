@@ -15,6 +15,9 @@ services:
       DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-}
       UPDATE_JOB_TIMEOUT: ${UPDATE_JOB_TIMEOUT:-900}
       UPDATE_CHECK_INTERVAL_HOURS: ${UPDATE_CHECK_INTERVAL_HOURS:-12}
+      EXTENSION_REGISTRY_URL: ${EXTENSION_REGISTRY_URL:-https://raw.githubusercontent.com/gatiger/homelab-dashboard/main/registry/index.json}
+      EXTENSION_REGISTRY_TIMEOUT: ${EXTENSION_REGISTRY_TIMEOUT:-8}
+      EXTENSION_REGISTRY_CACHE_SECONDS: ${EXTENSION_REGISTRY_CACHE_SECONDS:-300}
     volumes:
       - dashboard-data:/app/data
 

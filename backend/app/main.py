@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Literal
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from websocket import WebSocketTimeoutException, create_connection
@@ -42,9 +42,12 @@ UPDATE_AGENT_URL = os.getenv("UPDATE_AGENT_URL", "").strip().rstrip("/")
 UPDATE_AGENT_TOKEN = os.getenv("UPDATE_AGENT_TOKEN", "").strip()
 UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 3600))
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
+EXTENSION_REGISTRY_URL = os.getenv("EXTENSION_REGISTRY_URL", "https://raw.githubusercontent.com/gatiger/homelab-dashboard/main/registry/index.json").strip()
+EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TIMEOUT", "8")), 30.0))
+EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.16.0"
+APP_VERSION = "0.17.0"
 app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION)
 
 # Vite development origin. Production traffic is same-origin through nginx.
@@ -548,6 +551,124 @@ class ExtensionDescriptor(BaseModel):
     removable: bool = False
     capabilities: list[str] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
+
+
+class ExtensionRegistryEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=3, max_length=80)
+    name: str = Field(min_length=1, max_length=100)
+    version: str = Field(min_length=5, max_length=40)
+    author: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="Community data extension", max_length=240)
+    type: Literal["page_template_pack", "catalog_pack", "bundle"]
+    min_dashboard_version: str = Field(default="0.17.0", min_length=5, max_length=40)
+    capabilities: list[str] = Field(default_factory=list, max_length=10)
+    permissions: list[str] = Field(default_factory=list, max_length=10)
+    trust: Literal["official", "verified_community", "community"] = "community"
+    package: str = Field(min_length=1, max_length=240)
+    sha256: str = Field(min_length=64, max_length=64)
+    homepage_url: str | None = Field(default=None, max_length=500)
+    repository_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("id")
+    @classmethod
+    def validate_registry_id(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not EXTENSION_ID.fullmatch(value) or value.startswith("core.") or value.startswith("theme."):
+            raise ValueError("Invalid extension id")
+        return value
+
+    @field_validator("version", "min_dashboard_version")
+    @classmethod
+    def validate_registry_version(cls, value: str) -> str:
+        value = value.strip()
+        if not THEME_VERSION.fullmatch(value):
+            raise ValueError("Version must look like 1.0.0")
+        return value
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_registry_capabilities(cls, values: list[str]) -> list[str]:
+        unique = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        unknown = [value for value in unique if value not in EXTENSION_CAPABILITIES]
+        if unknown:
+            raise ValueError(f"Unsupported extension capabilities: {', '.join(unknown)}")
+        return unique
+
+    @field_validator("permissions")
+    @classmethod
+    def validate_registry_permissions(cls, values: list[str]) -> list[str]:
+        unique = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        unknown = [value for value in unique if value not in EXTENSION_PERMISSIONS]
+        if unknown:
+            raise ValueError(f"Unsupported extension permissions: {', '.join(unknown)}")
+        return unique
+
+    @field_validator("package")
+    @classmethod
+    def validate_package_path(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme or parsed.netloc or value.startswith("//") or any(part == ".." for part in value.split("/")):
+            raise ValueError("Registry package must be a relative path")
+        return value
+
+    @field_validator("sha256")
+    @classmethod
+    def validate_sha256(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("sha256 must contain 64 hexadecimal characters")
+        return value
+
+
+class ExtensionRegistryIndex(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    format: Literal["homelab-dashboard-extension-registry"] = "homelab-dashboard-extension-registry"
+    schema_version: Literal[1] = 1
+    id: str = Field(min_length=2, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="Homelab Dashboard extension registry", max_length=300)
+    entries: list[ExtensionRegistryEntry] = Field(default_factory=list, max_length=2000)
+
+
+class ExtensionRegistryItem(ExtensionRegistryEntry):
+    installed_version: str | None = None
+    installed_enabled: bool | None = None
+    update_available: bool = False
+    compatible: bool = True
+    compatibility_message: str | None = None
+
+
+class ExtensionRegistryResponse(BaseModel):
+    registry_id: str
+    registry_name: str
+    description: str
+    source_url: str
+    checked_at: str
+    entries: list[ExtensionRegistryItem]
+
+
+class ExtensionRegistryInstallRequest(BaseModel):
+    expected_version: str = Field(min_length=5, max_length=40)
+    expected_sha256: str = Field(min_length=64, max_length=64)
+    accepted_permissions: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("expected_version")
+    @classmethod
+    def validate_expected_version(cls, value: str) -> str:
+        value = value.strip()
+        if not THEME_VERSION.fullmatch(value):
+            raise ValueError("Version must look like 1.0.0")
+        return value
+
+    @field_validator("expected_sha256")
+    @classmethod
+    def validate_expected_sha256(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("Invalid sha256")
+        return value
 
 
 EXTENSION_ID = re.compile(r"^[a-z0-9][a-z0-9.-]{2,79}$")
@@ -1568,7 +1689,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.16.0", "Accept": "*/*"},
+        headers={"User-Agent": f"HomelabDashboard/{APP_VERSION}", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -1635,7 +1756,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.16.0", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": f"HomelabDashboard/{APP_VERSION}", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -3351,6 +3472,153 @@ def create_page_from_template(connection: sqlite3.Connection, template: PageTemp
         )
     row = connection.execute("SELECT * FROM dashboard_pages WHERE id = ?", (page_id,)).fetchone()
     return row_to_page(row)
+
+
+_registry_cache_lock = threading.Lock()
+_registry_cache: tuple[float, ExtensionRegistryIndex] | None = None
+
+
+def _registry_source_url() -> str:
+    value = EXTENSION_REGISTRY_URL.strip()
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Extension registry URL must use HTTPS")
+    return value
+
+
+def _read_limited_url(url: str, *, maximum: int) -> bytes:
+    request = Request(url, headers={"User-Agent": f"Homelab-Dashboard/{APP_VERSION}", "Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=EXTENSION_REGISTRY_TIMEOUT) as response:
+            requested = urlparse(url)
+            final = urlparse(response.geturl())
+            if final.scheme != "https" or final.netloc != requested.netloc:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Registry download redirected outside its HTTPS origin")
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "json" not in content_type and "text/plain" not in content_type and "octet-stream" not in content_type:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Registry returned an unsupported content type")
+            data = response.read(maximum + 1)
+    except HTTPException:
+        raise
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Unable to reach extension registry: {exc}") from exc
+    if len(data) > maximum:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Registry response is too large")
+    return data
+
+
+def load_extension_registry(*, refresh: bool = False) -> ExtensionRegistryIndex:
+    global _registry_cache
+    now = time.time()
+    with _registry_cache_lock:
+        if not refresh and _registry_cache and now - _registry_cache[0] < EXTENSION_REGISTRY_CACHE_SECONDS:
+            return _registry_cache[1]
+    source = _registry_source_url()
+    raw = _read_limited_url(source, maximum=2_000_000)
+    try:
+        registry = ExtensionRegistryIndex.model_validate_json(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Extension registry is invalid: {exc}") from exc
+    ids = [entry.id for entry in registry.entries]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Extension registry contains duplicate extension ids")
+    with _registry_cache_lock:
+        _registry_cache = (now, registry)
+    return registry
+
+
+def registry_package_url(entry: ExtensionRegistryEntry) -> str:
+    source = _registry_source_url()
+    package_url = urljoin(source, entry.package)
+    source_parts = urlparse(source)
+    package_parts = urlparse(package_url)
+    if package_parts.scheme != "https" or package_parts.netloc != source_parts.netloc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Registry package must stay on the registry HTTPS origin")
+    return package_url
+
+
+def registry_response(*, refresh: bool = False) -> ExtensionRegistryResponse:
+    registry = load_extension_registry(refresh=refresh)
+    with db() as connection:
+        installed_rows = {row["id"]: row for row in connection.execute("SELECT * FROM installed_extensions").fetchall()}
+    entries: list[ExtensionRegistryItem] = []
+    for entry in registry.entries:
+        installed_version = None
+        installed_enabled = None
+        row = installed_rows.get(entry.id)
+        if row:
+            try:
+                package = ExtensionPackage.model_validate_json(row["manifest_json"])
+                installed_version = package.version
+                installed_enabled = bool(row["enabled"])
+            except ValueError:
+                pass
+        compatible = extension_version_tuple(entry.min_dashboard_version) <= extension_version_tuple(APP_VERSION)
+        entries.append(ExtensionRegistryItem(
+            **entry.model_dump(),
+            installed_version=installed_version,
+            installed_enabled=installed_enabled,
+            update_available=bool(installed_version and extension_version_tuple(entry.version) > extension_version_tuple(installed_version)),
+            compatible=compatible,
+            compatibility_message=None if compatible else f"Requires Homelab Dashboard {entry.min_dashboard_version} or newer",
+        ))
+    return ExtensionRegistryResponse(
+        registry_id=registry.id,
+        registry_name=registry.name,
+        description=registry.description,
+        source_url=_registry_source_url(),
+        checked_at=iso_now(),
+        entries=entries,
+    )
+
+
+@app.get("/api/extensions/registry", response_model=ExtensionRegistryResponse)
+def get_extension_registry(refresh: bool = False, _: SessionUser = Depends(require_auth)) -> ExtensionRegistryResponse:
+    return registry_response(refresh=refresh)
+
+
+@app.post("/api/extensions/registry/{extension_id}/install", response_model=ExtensionDescriptor)
+def install_registry_extension(extension_id: str, payload: ExtensionRegistryInstallRequest, _: SessionUser = Depends(require_write_auth)) -> ExtensionDescriptor:
+    registry = load_extension_registry(refresh=True)
+    entry = next((item for item in registry.entries if item.id == extension_id), None)
+    if not entry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Extension is not present in the configured registry")
+    if payload.expected_version != entry.version or payload.expected_sha256.lower() != entry.sha256:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Registry entry changed; refresh the registry before installing")
+    if sorted(set(payload.accepted_permissions)) != sorted(set(entry.permissions)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Accepted permissions do not match the registry package")
+    if extension_version_tuple(entry.min_dashboard_version) > extension_version_tuple(APP_VERSION):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Extension requires Homelab Dashboard {entry.min_dashboard_version} or newer")
+    package_url = registry_package_url(entry)
+    raw = _read_limited_url(package_url, maximum=4_000_000)
+    digest = hashlib.sha256(raw).hexdigest()
+    if not hmac.compare_digest(digest, entry.sha256):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Extension package checksum does not match the registry")
+    try:
+        package = ExtensionPackage.model_validate_json(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Extension package is invalid: {exc}") from exc
+    validate_extension_package_content(package)
+    if package.id != entry.id or package.version != entry.version:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Extension package identity/version does not match the registry")
+    if sorted(package.permissions) != sorted(entry.permissions) or sorted(package.capabilities) != sorted(entry.capabilities):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Extension package capabilities/permissions do not match the registry")
+    now = iso_now()
+    with db() as connection:
+        existing = connection.execute("SELECT * FROM installed_extensions WHERE id = ?", (package.id,)).fetchone()
+        if existing:
+            current = ExtensionPackage.model_validate_json(existing["manifest_json"])
+            if extension_version_tuple(package.version) <= extension_version_tuple(current.version):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The installed extension is already this version or newer")
+            enabled = bool(existing["enabled"])
+            connection.execute("UPDATE installed_extensions SET manifest_json = ?, updated_at = ? WHERE id = ?", (package.model_dump_json(), now, package.id))
+        else:
+            enabled = True
+            connection.execute(
+                "INSERT INTO installed_extensions (id, manifest_json, enabled, installed_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+                (package.id, package.model_dump_json(), now, now),
+            )
+    return extension_descriptor(package, enabled)
 
 
 @app.get("/api/extensions", response_model=list[ExtensionDescriptor])

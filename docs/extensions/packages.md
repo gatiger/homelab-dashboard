@@ -1,6 +1,6 @@
 # Data-only extension packages
 
-Homelab Dashboard v0.16 introduces the first general extension-package format. The initial runtime is deliberately **data only**: packages can register reusable page templates and/or service-catalog metadata, but they cannot execute third-party JavaScript, Python, shell commands, CSS, or other code.
+Homelab Dashboard v0.16 introduced the first general extension-package format. The initial runtime is deliberately **data only**: packages can register reusable page templates and/or service-catalog metadata, but they cannot execute third-party JavaScript, Python, shell commands, CSS, or other code.
 
 ## Package format
 
@@ -24,7 +24,7 @@ An extension is a JSON file with this top-level structure:
 }
 ```
 
-Supported v0.16 package types are:
+Supported data-only package types are:
 
 - `page_template_pack` — contains page templates only.
 - `catalog_pack` — contains service-catalog entries only.
@@ -39,11 +39,11 @@ The manifest distinguishes what an extension **provides** from what it is allowe
 | `page_templates` | `dashboard:register-templates` | Add reusable page templates to the Add Page workflow |
 | `service_catalog` | `catalog:register-entries` | Add metadata-only entries to the Add Service catalog |
 
-Unknown permissions are rejected. In particular, v0.16 has no permission that grants Docker control, credential access, filesystem access, arbitrary network access, or code execution.
+Unknown permissions are rejected. In particular, the current runtime has no permission that grants Docker control, credential access, filesystem access, arbitrary network access, or code execution.
 
 ## Installing a package
 
-Open **Settings → Extensions → Import extension**, select the JSON file, and review the capabilities/permissions shown in the confirmation dialog. Imported data packs can then be enabled, disabled, or removed.
+Open **Settings → Extensions → Import file**, select the JSON file, and review the capabilities/permissions shown in the confirmation dialog. v0.17 can also install the same package format from the Extension Registry after verifying the registry checksum. Imported data packs can then be enabled, disabled, or removed.
 
 Disabling/removing a package removes its templates/catalog entries from future selection. It does **not** delete pages or service cards that were already created from that package.
 
@@ -68,4 +68,4 @@ Catalog entries do not add a backend API integration by themselves. A community 
 
 ## Future executable extensions
 
-The v0.16 manifest and permission language are foundations for a future sandboxed plugin SDK. Executable widgets, integration adapters, authentication adapters, registry discovery, and broader permissions are intentionally deferred until isolation, signing/trust, compatibility, and secret-access boundaries are designed and tested.
+The manifest and permission language are foundations for a future sandboxed plugin SDK. Executable widgets, integration adapters, authentication adapters, broader executable permissions are intentionally deferred until isolation, signing/trust, compatibility, and secret-access boundaries are designed and tested.

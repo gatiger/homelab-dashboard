@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.16.0
+ghcr.io/gatiger/homelab-dashboard:0.17.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -118,9 +118,9 @@ The built-in widget pack includes Clock & Date, Note, Bookmarks, Dashboard Summa
 
 For a complete lockout where both the password and recovery code are unavailable, someone with legitimate shell access to the dashboard host can run `docker exec -it <dashboard-container> python -m app.admin reset-password`. This emergency path resets the local administrator password, invalidates all existing sessions, and rotates the recovery code. See [Account recovery](docs/configuration/account-recovery.md).
 
-Community themes can be imported as validated JSON packages. v0.16 also accepts versioned **data-only extension packages** for reusable dashboard page templates and service-catalog metadata. Page templates can be exported directly from an existing page; secrets and management links are excluded before the package reaches the browser. Installed data packs can be enabled, disabled, or removed without deleting pages/cards that were already created from them.
+Community themes can be imported as validated JSON packages. Versioned **data-only extension packages** can register reusable dashboard page templates and service-catalog metadata. Page templates can be exported directly from an existing page; secrets and management links are excluded before the package reaches the browser. Installed data packs can be enabled, disabled, updated, or removed without deleting pages/cards that were already created from them.
 
-Extension manifests declare capabilities and permissions up front. The v0.16 permission allow-list contains only registration capabilities for templates and catalog metadata: packages still cannot execute JavaScript/Python/shell code, access Docker, read saved credentials, make arbitrary network requests, or access the host filesystem. See [Extension packages](docs/extensions/packages.md), [Theme extensions](docs/extensions/themes.md), and the broader [extension architecture](docs/extensions/architecture.md).
+v0.17 adds an in-app **Extension Registry**. Registry entries carry publisher/trust metadata, minimum-dashboard compatibility, declared capabilities/permissions, and the SHA-256 checksum of the exact package bytes. Installs and updates are downloaded only from the configured registry HTTPS origin and are checksum-verified before validation. The permission allow-list remains data-only: packages still cannot execute JavaScript/Python/shell code, access Docker, read saved credentials, make arbitrary network requests, or access the host filesystem. See [Extension registry](docs/extensions/registry.md), [Extension packages](docs/extensions/packages.md), [Theme extensions](docs/extensions/themes.md), and the broader [extension architecture](docs/extensions/architecture.md).
 
 ## Service catalog
 

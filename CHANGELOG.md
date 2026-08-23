@@ -4,6 +4,29 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.17.0] - 2026-08-23
+
+### Added
+- In-app Extension Registry browser under Settings → Extensions.
+- Registry trust labels: Official, Verified Community, and Community.
+- Minimum-dashboard compatibility status for registry entries.
+- SHA-256 package verification and same-HTTPS-origin package enforcement.
+- One-click registry installation for data-only page-template and service-catalog packs.
+- Registry-backed update detection and in-place package updates while preserving enabled/disabled state.
+- Registry maintainer validator (`scripts/validate-registry.py`) and CI coverage.
+- Default repository-hosted registry index plus example community data packs.
+
+### Changed
+- Extension Manager now separates registry discovery from the installed-extension inventory.
+- Manual extension import remains available as an offline/fallback installation path.
+- Extension update confirmation displays publisher trust, author, capabilities, and permissions before the backend downloads the package.
+
+### Security
+- Registry package paths must remain relative to—and download from—the same HTTPS origin as the registry index.
+- Package bytes must match the registry SHA-256 digest before manifest parsing/installation.
+- Registry and downloaded package identity, version, capabilities, and permissions must match exactly.
+- Registry trust labels do not bypass validation; executable third-party code remains disabled.
+
 ## [0.16.0] - 2026-08-23
 
 ### Added

@@ -175,12 +175,26 @@ Additional management providers are tracked separately below rather than making 
 - Export an existing dashboard page as a shareable secret-free template package ✅
 - Package authoring documentation and examples ✅
 - Executable plugin SDK/runtime with sandboxed permissions 🚧
-- Community extension registry/discovery 🚧
+- Community extension registry/discovery ✅
 - Installable/community integration adapter runtime 🚧
 - Community executable widget packs 🚧
 - Role-based permissions 🚧
 - Native/OIDC/SSO/reverse-proxy authentication adapters 🚧
 - OIDC / Authentik / Authelia support 🚧
+
+## Milestone 17 — Extension registry and package updates ✅
+
+- In-app registry discovery for data-only extensions
+- Official / Verified Community / Community trust labels
+- Minimum-dashboard compatibility checks
+- SHA-256 verification of downloaded extension packages
+- Same-HTTPS-origin package enforcement
+- Registry install flow with explicit permission/capability confirmation
+- Installed-version comparison and update availability
+- In-place extension updates that preserve enabled/disabled state
+- Manual JSON import fallback when the registry is offline
+- Registry contribution format, maintainer validator, and CI checks
+- Package signing/transparency remains a future prerequisite before executable third-party extensions
 
 ## Management-provider follow-ups 🚧
 

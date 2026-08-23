@@ -1,5 +1,5 @@
 import React, { FormEvent, useEffect, useRef, useState } from "react";
-import { Cable, Copy, Download, Gauge, Info, KeyRound, LayoutGrid, Monitor, Palette, Puzzle, Save, Settings, ShieldCheck, Upload, X } from "lucide-react";
+import { Cable, Copy, Download, Gauge, Info, KeyRound, LayoutGrid, Monitor, Palette, Puzzle, RefreshCw, Save, Settings, ShieldCheck, Upload, X } from "lucide-react";
 
 export type DashboardSettings = {
   dashboard_title: string;
@@ -23,6 +23,38 @@ export type ExtensionDescriptor = {
   removable: boolean;
   capabilities: string[];
   permissions: string[];
+};
+
+
+export type ExtensionRegistryItem = {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  type: "page_template_pack" | "catalog_pack" | "bundle";
+  min_dashboard_version: string;
+  capabilities: string[];
+  permissions: string[];
+  trust: "official" | "verified_community" | "community";
+  package: string;
+  sha256: string;
+  homepage_url?: string | null;
+  repository_url?: string | null;
+  installed_version?: string | null;
+  installed_enabled?: boolean | null;
+  update_available: boolean;
+  compatible: boolean;
+  compatibility_message?: string | null;
+};
+
+export type ExtensionRegistryResponse = {
+  registry_id: string;
+  registry_name: string;
+  description: string;
+  source_url: string;
+  checked_at: string;
+  entries: ExtensionRegistryItem[];
 };
 
 export type AccountAuditEvent = {
@@ -73,6 +105,9 @@ export function SettingsModal({
   settings,
   account,
   extensions,
+  registry,
+  registryLoading,
+  registryError,
   currentTheme,
   importedThemeCount,
   connections,
@@ -91,10 +126,15 @@ export function SettingsModal({
   onImportExtension,
   onToggleExtension,
   onRemoveExtension,
+  onRefreshRegistry,
+  onInstallRegistryExtension,
 }: {
   settings: DashboardSettings;
   account: AccountSummary | null;
   extensions: ExtensionDescriptor[];
+  registry: ExtensionRegistryResponse | null;
+  registryLoading: boolean;
+  registryError: string;
   currentTheme: string;
   importedThemeCount: number;
   connections: ConnectionSummary[];
@@ -113,6 +153,8 @@ export function SettingsModal({
   onImportExtension: (file: File) => Promise<void>;
   onToggleExtension: (extension: ExtensionDescriptor) => Promise<void>;
   onRemoveExtension: (extension: ExtensionDescriptor) => Promise<void>;
+  onRefreshRegistry: () => Promise<void>;
+  onInstallRegistryExtension: (entry: ExtensionRegistryItem) => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>("general");
   const [form, setForm] = useState(settings);
@@ -187,7 +229,7 @@ export function SettingsModal({
                 <label><span>Service telemetry refresh</span><select value={form.telemetry_refresh_seconds} onChange={(event) => setForm((current) => ({ ...current, telemetry_refresh_seconds: Number(event.target.value) }))}>{[5,10,15,30,60,120].map((value) => <option key={value} value={value}>{value} seconds</option>)}</select></label>
                 <label><span>Update-state refresh</span><select value={form.update_status_refresh_seconds} onChange={(event) => setForm((current) => ({ ...current, update_status_refresh_seconds: Number(event.target.value) }))}>{[5,10,15,30,60,120].map((value) => <option key={value} value={value}>{value} seconds</option>)}</select></label>
                 <label><span>Active-job refresh</span><select value={form.active_refresh_seconds} onChange={(event) => setForm((current) => ({ ...current, active_refresh_seconds: Number(event.target.value) }))}>{[1,2,3,5,10].map((value) => <option key={value} value={value}>{value} second{value === 1 ? "" : "s"}</option>)}</select></label>
-                <label><span>Automatic update discovery</span><select value={form.update_check_interval_hours} onChange={(event) => setForm((current) => ({ ...current, update_check_interval_hours: Number(event.target.value) }))}><option value={0}>Disabled</option>{[1,3,6,12,24,48,72].map((value) => <option key={value} value={value}>Every {value} hour{value === 1 ? "" : "s"}</option>)}</select><small>This is the heavier registry/TrueNAS check. Cards continue reading cached state at the faster interval above.</small></label>
+                <label><span>Automatic update discovery</span><select value={form.update_check_interval_hours} onChange={(event) => setForm((current) => ({ ...current, update_check_interval_hours: Number(event.target.value) }))}><option value={0}>Disabled</option>{[1,3,6,12,24,48,72].map((value) => <option key={value} value={value}>Every {value} hour{value === 1 ? "" : "s"}</option>)}</select><small>This is the heavier container-registry/TrueNAS update check. Cards continue reading cached state at the faster interval above.</small></label>
               </>}
               {error && <div className="notice compact">{error}</div>}{saved && <div className="connection-success">{saved}</div>}
               <div className="settings-save"><button className="primary" type="submit" disabled={busy}><Save size={16} /> {busy ? "Saving…" : "Save settings"}</button></div>
@@ -230,27 +272,51 @@ export function SettingsModal({
             {tab === "connections" && <div className="settings-panel"><div className="settings-heading"><Cable size={19} /><div><h3>Connections</h3><p>Reusable controller credentials for TrueNAS and future management providers.</p></div></div>{connections.length ? <div className="settings-list">{connections.map((item) => <div key={item.id}><span><strong>{item.name}</strong><small>{item.type} · used by {item.used_by}</small></span></div>)}</div> : <div className="settings-empty">No management connections configured.</div>}<button className="primary" type="button" onClick={() => openSub(onOpenConnections)}>Manage connections</button></div>}
 
             {tab === "extensions" && <div className="settings-panel">
-              <div className="settings-heading"><Puzzle size={19} /><div><h3>Extension Manager</h3><p>Install and manage validated data-only page-template and service-catalog packs. Executable third-party plugin code is still blocked.</p></div></div>
+              <div className="settings-heading"><Puzzle size={19} /><div><h3>Extension Manager</h3><p>Browse the registry, install checksum-verified data extensions, and manage installed page-template and service-catalog packs.</p></div></div>
               <div className="builder-action-grid">
-                <button className="primary" type="button" onClick={() => extensionInputRef.current?.click()}><Upload size={16} /> Import extension</button>
+                <button className="primary" type="button" onClick={() => extensionInputRef.current?.click()}><Upload size={16} /> Import file</button>
+                <button className="secondary" type="button" disabled={registryLoading} onClick={() => void onRefreshRegistry().catch(() => undefined)}><RefreshCw size={16} className={registryLoading ? "spin" : ""} /> {registryLoading ? "Checking…" : "Check registry"}</button>
                 <input ref={extensionInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; setError(""); void onImportExtension(file).catch((err) => setError(err instanceof Error ? err.message : "Unable to import extension.")); }} />
               </div>
-              <div className="settings-callout"><strong>Safe extension boundary</strong><span>v0.16 packages may register page templates or service-catalog metadata only. They cannot run JavaScript/Python, access Docker, read saved credentials, make network requests, or access the host filesystem.</span></div>
+              <div className="settings-callout"><strong>Safe extension boundary</strong><span>v0.17 registry packages are still data-only. Registry installs are checksum-verified and permission declarations must match exactly; packages still cannot execute code, access Docker, read credentials, make arbitrary network requests, or access the host filesystem.</span></div>
               {error && <div className="notice compact">{error}</div>}
-              <div className="extension-list">{extensions.map((extension) => <div className={`extension-row ${!extension.enabled ? "extension-disabled" : ""}`} key={extension.id}>
-                <div className="extension-mark"><Puzzle size={17} /></div>
-                <span><strong>{extension.name}</strong><small>{extension.description}</small><em>{extension.author} · v{extension.version} · {extension.source === "built_in" ? "Built in" : "Imported"}{extension.active && extension.type === "theme" ? " · Active" : ""}{extension.source === "imported" && extension.type !== "theme" ? extension.enabled ? " · Enabled" : " · Disabled" : ""}</em>
-                  {extension.capabilities?.length > 0 && <small>Capabilities: {extension.capabilities.join(", ")}</small>}
-                  {extension.permissions?.length > 0 && <small>Permissions: {extension.permissions.join(", ")}</small>}
-                </span>
-                {extension.source === "imported" && extension.type !== "theme" && <button className="secondary compact-button" type="button" onClick={() => void onToggleExtension(extension).catch((err) => setError(err instanceof Error ? err.message : "Unable to change extension state."))}>{extension.enabled ? "Disable" : "Enable"}</button>}
-                {extension.removable && (extension.type === "theme"
-                  ? <button className="danger-button compact-button" type="button" onClick={() => void onRemoveTheme(extension.id.replace(/^theme\./, ""))}>Remove</button>
-                  : <button className="danger-button compact-button" type="button" onClick={() => void onRemoveExtension(extension).catch((err) => setError(err instanceof Error ? err.message : "Unable to remove extension."))}>Remove</button>)}
-              </div>)}</div>
+              {registryError && <div className="notice compact">Registry unavailable: {registryError}. Manual JSON import remains available.</div>}
+              {registry && <div className="registry-section">
+                <div className="registry-heading"><span><strong>{registry.registry_name}</strong><small>{registry.description}</small></span><em>Checked {formatWhen(registry.checked_at)}</em></div>
+                <div className="registry-grid">{registry.entries.map((entry) => {
+                  const trustLabel = entry.trust === "official" ? "Official" : entry.trust === "verified_community" ? "Verified Community" : "Community";
+                  const action = entry.update_available ? "Update" : entry.installed_version ? "Installed" : "Install";
+                  return <div className={`registry-card ${!entry.compatible ? "registry-incompatible" : ""}`} key={entry.id}>
+                    <div className="registry-card-top"><span><strong>{entry.name}</strong><small>{entry.description}</small></span><span className={`trust-badge trust-${entry.trust}`}>{trustLabel}</span></div>
+                    <div className="registry-meta">{entry.author} · v{entry.version}{entry.installed_version ? ` · installed v${entry.installed_version}` : ""}</div>
+                    <small>Capabilities: {entry.capabilities.join(", ") || "none"}</small>
+                    <small>Permissions: {entry.permissions.join(", ") || "none"}</small>
+                    {!entry.compatible && <small className="registry-warning">{entry.compatibility_message}</small>}
+                    {entry.update_available && <small className="registry-update">Update available: {entry.installed_version} → {entry.version}</small>}
+                    <button className={entry.update_available ? "primary compact-button" : "secondary compact-button"} type="button" disabled={!entry.compatible || (!!entry.installed_version && !entry.update_available)} onClick={() => void onInstallRegistryExtension(entry).catch((err) => setError(err instanceof Error ? err.message : "Unable to install extension."))}>{action}</button>
+                  </div>;
+                })}</div>
+              </div>}
+              <div className="extension-subheading"><strong>Installed extensions</strong><small>Built-in modules, themes, and installed data packs.</small></div>
+              <div className="extension-list">{extensions.map((extension) => {
+                const registryEntry = registry?.entries.find((entry) => entry.id === extension.id);
+                return <div className={`extension-row ${!extension.enabled ? "extension-disabled" : ""}`} key={extension.id}>
+                  <div className="extension-mark"><Puzzle size={17} /></div>
+                  <span><strong>{extension.name}</strong><small>{extension.description}</small><em>{extension.author} · v{extension.version} · {extension.source === "built_in" ? "Built in" : "Imported"}{extension.active && extension.type === "theme" ? " · Active" : ""}{extension.source === "imported" && extension.type !== "theme" ? extension.enabled ? " · Enabled" : " · Disabled" : ""}</em>
+                    {registryEntry?.update_available && <small className="registry-update">Registry update available: v{registryEntry.version}</small>}
+                    {extension.capabilities?.length > 0 && <small>Capabilities: {extension.capabilities.join(", ")}</small>}
+                    {extension.permissions?.length > 0 && <small>Permissions: {extension.permissions.join(", ")}</small>}
+                  </span>
+                  {registryEntry?.update_available && <button className="primary compact-button" type="button" onClick={() => void onInstallRegistryExtension(registryEntry).catch((err) => setError(err instanceof Error ? err.message : "Unable to update extension."))}>Update</button>}
+                  {extension.source === "imported" && extension.type !== "theme" && <button className="secondary compact-button" type="button" onClick={() => void onToggleExtension(extension).catch((err) => setError(err instanceof Error ? err.message : "Unable to change extension state."))}>{extension.enabled ? "Disable" : "Enable"}</button>}
+                  {extension.removable && (extension.type === "theme"
+                    ? <button className="danger-button compact-button" type="button" onClick={() => void onRemoveTheme(extension.id.replace(/^theme\./, ""))}>Remove</button>
+                    : <button className="danger-button compact-button" type="button" onClick={() => void onRemoveExtension(extension).catch((err) => setError(err instanceof Error ? err.message : "Unable to remove extension."))}>Remove</button>)}
+                </div>;
+              })}</div>
             </div>}
 
-            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.16 adds validated extension manifests, permission/capability declarations, reusable page-template packs, and community service-catalog packs while keeping executable third-party code disabled.</small></div></div>}
+            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.17 adds a checksum-verified extension registry, trust labels, compatibility checks, and in-place data-extension updates while keeping executable third-party code disabled.</small></div></div>}
           </div>
         </div>
       </section>

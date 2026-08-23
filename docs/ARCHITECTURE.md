@@ -14,7 +14,7 @@
 ## Current layers
 
 - **Production application container:** Nginx serves the React/TypeScript frontend and proxies `/api` to the local FastAPI process inside the same image. The source tree still keeps frontend and backend concerns separate for development.
-- **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata; enabled v0.16 community catalog packs are merged into the runtime picker as validated data-only entries.
+- **Service catalog:** `frontend/src/serviceCatalog.ts` contains built-in template metadata; enabled community catalog packs are merged into the runtime picker as validated data-only entries.
 - **Backend:** FastAPI authentication, configuration, health checks, secret storage, and integration adapters.
 - **Database:** SQLite in a persistent Docker volume. Services, pages, widgets, Settings, appearance selection, imported theme manifests, installed data-extension manifests, connections, and update history are stored alongside dashboard configuration.
 - **Theme layer:** Frontend components consume validated design tokens. Built-in and imported themes share the same data shape; imported theme packages are non-executable JSON.
@@ -30,9 +30,9 @@ The catalog is intentionally separate from configured services. A catalog entry 
 
 ## Extension path
 
-v0.9 established non-executable theme manifests. v0.10 added explicit backend integration descriptors and a shared activity/progress model. v0.16 adds the first general `homelab-dashboard-extension` manifest and persistent install/enable/disable/remove lifecycle. The initial runtime accepts two safe data capabilities: reusable page templates and service-catalog metadata.
+v0.9 established non-executable theme manifests. v0.10 added explicit backend integration descriptors and a shared activity/progress model. v0.16 added the first general `homelab-dashboard-extension` manifest and persistent install/enable/disable/remove lifecycle. v0.17 adds registry discovery and checksum-verified install/update flows. The runtime still accepts only two safe data capabilities: reusable page templates and service-catalog metadata.
 
-General extension manifests declare both capabilities and requested permissions. The v0.16 allow-list grants registration only; unknown permissions are rejected and no package can execute code, access Docker, read stored credentials, open arbitrary network connections, or access the host filesystem. Future executable widgets/integrations/authentication adapters will require a separate sandboxed SDK and broader permission design. See `docs/extensions/architecture.md` and `docs/extensions/packages.md`.
+General extension manifests declare both capabilities and requested permissions. The current allow-list grants registration only; unknown permissions are rejected and no package can execute code, access Docker, read stored credentials, open arbitrary network connections, or access the host filesystem. Future executable widgets/integrations/authentication adapters will require a separate sandboxed SDK and broader permission design. See `docs/extensions/architecture.md` and `docs/extensions/packages.md`.
 
 ## Integration/activity model
 
@@ -55,7 +55,7 @@ The update-agent is a privileged component because Docker socket access is effec
 
 ## Settings and widget model
 
-Dashboard-wide preferences are persisted in the existing `app_settings` store and exposed through authenticated Settings endpoints. v0.16 uses these preferences for the dashboard title/greeting, browser telemetry refresh cadence, cached update-state refresh cadence, active-job refresh cadence, and the server-side update-discovery interval. Browser refresh timing and update discovery remain intentionally separate so the UI can feel live without repeatedly querying registries or platform APIs.
+Dashboard-wide preferences are persisted in the existing `app_settings` store and exposed through authenticated Settings endpoints. These preferences control the dashboard title/greeting, browser telemetry refresh cadence, cached update-state refresh cadence, active-job refresh cadence, and the server-side update-discovery interval. Browser refresh timing and update discovery remain intentionally separate so the UI can feel live without repeatedly querying registries or platform APIs.
 
 Built-in dashboard widgets are stored in `dashboard_widgets`. A widget has a type, title, page/category placement, card size, sort order, enabled state, and validated JSON configuration. The built-in widget pack currently ships clock, note, bookmarks, system-summary, service-status, and update-overview widgets. Widget configuration is data-only; the current Extension Manager does not execute third-party JavaScript, Python, CSS, or other arbitrary plugin code.
 

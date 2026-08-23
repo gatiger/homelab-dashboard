@@ -33,6 +33,9 @@ jobs:
         working-directory: backend
         run: pytest -q
 
+      - name: Validate extension registry
+        run: python scripts/validate-registry.py
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

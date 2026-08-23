@@ -30,7 +30,7 @@ import "./styles.css";
 import { SERVICE_CATALOG, catalogSearchText, urlPlaceholder, type CatalogEntry } from "./serviceCatalog";
 import { BUILTIN_THEMES, BUILTIN_THEME_BY_ID, THEME_TEMPLATE, applyTheme, resolveTheme, type ThemePackage } from "./themes";
 import { WidgetCard, WidgetModal, type DashboardWidget } from "./widgets";
-import { SettingsModal, type AccountSummary, type DashboardSettings, type ExtensionDescriptor, type RecoveryCodeResult } from "./settings";
+import { SettingsModal, type AccountSummary, type DashboardSettings, type ExtensionDescriptor, type ExtensionRegistryItem, type ExtensionRegistryResponse, type RecoveryCodeResult } from "./settings";
 
 type AuthStatus = {
   setup_required: boolean;
@@ -208,7 +208,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.16.0";
+const APP_VERSION = "0.17.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -1446,6 +1446,9 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [editingWidget, setEditingWidget] = useState<DashboardWidget | null | undefined>(undefined);
   const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>({ dashboard_title: "Homelab Dashboard", show_greeting: true, telemetry_refresh_seconds: 15, update_status_refresh_seconds: 15, active_refresh_seconds: 3, update_check_interval_hours: 12 });
   const [extensions, setExtensions] = useState<ExtensionDescriptor[]>([]);
+  const [extensionRegistry, setExtensionRegistry] = useState<ExtensionRegistryResponse | null>(null);
+  const [extensionRegistryLoading, setExtensionRegistryLoading] = useState(false);
+  const [extensionRegistryError, setExtensionRegistryError] = useState("");
   const [catalogEntries, setCatalogEntries] = useState<CatalogEntry[]>(SERVICE_CATALOG);
   const [pageTemplates, setPageTemplates] = useState<PageTemplateDescriptor[]>([]);
   const [updatesOpen, setUpdatesOpen] = useState(false);
@@ -1492,6 +1495,39 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
       setCatalogEntries([...SERVICE_CATALOG, ...customCatalog.filter((entry) => !builtInTypes.has(entry.type))]);
       setPageTemplates(templates);
     } catch { /* Extension inventory is optional; built-in catalog remains available. */ }
+  }
+
+  async function loadExtensionRegistry(refresh = false) {
+    setExtensionRegistryLoading(true);
+    setExtensionRegistryError("");
+    try {
+      setExtensionRegistry(await api<ExtensionRegistryResponse>(`/api/extensions/registry${refresh ? "?refresh=true" : ""}`));
+    } catch (err) {
+      setExtensionRegistryError(err instanceof Error ? err.message : "Unable to load extension registry.");
+    } finally {
+      setExtensionRegistryLoading(false);
+    }
+  }
+
+  async function installRegistryExtension(entry: ExtensionRegistryItem) {
+    const trustLabel = entry.trust === "official" ? "Official" : entry.trust === "verified_community" ? "Verified Community" : "Community";
+    const verb = entry.update_available ? "Update" : "Install";
+    const summary = [
+      `${verb} ${entry.name} to v${entry.version}?`,
+      "",
+      `Trust: ${trustLabel}`,
+      `Author: ${entry.author}`,
+      `Capabilities: ${entry.capabilities.join(", ") || "none"}`,
+      `Permissions: ${entry.permissions.join(", ") || "none"}`,
+      "",
+      "The package will be downloaded from the configured registry origin and verified against its SHA-256 checksum before installation.",
+    ].join("\n");
+    if (!window.confirm(summary)) return;
+    await api<ExtensionDescriptor>(`/api/extensions/registry/${encodeURIComponent(entry.id)}/install`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version: entry.version, expected_sha256: entry.sha256, accepted_permissions: entry.permissions }),
+    }, auth.csrf_token);
+    await Promise.all([loadExtensions(), loadExtensionRegistry(true)]);
   }
 
   async function loadAccount() {
@@ -1899,21 +1935,21 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     if (manifest.format !== "homelab-dashboard-extension") throw new Error("This is not a Homelab Dashboard extension package.");
     const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.map(String) : [];
     const capabilities = Array.isArray(manifest.capabilities) ? manifest.capabilities.map(String) : [];
-    const summary = [`Install ${String(manifest.name ?? file.name)}?`, "", `Capabilities: ${capabilities.join(", ") || "none"}`, `Permissions: ${permissions.join(", ") || "none"}`, "", "v0.16 accepts data-only extension packages only; executable plugin code is not supported."] .join("\n");
+    const summary = [`Install ${String(manifest.name ?? file.name)}?`, "", `Capabilities: ${capabilities.join(", ") || "none"}`, `Permissions: ${permissions.join(", ") || "none"}`, "", "v0.17 accepts data-only extension packages only; executable plugin code is not supported."] .join("\n");
     if (!window.confirm(summary)) return;
     await api<ExtensionDescriptor>("/api/extensions/import", { method: "POST", body: JSON.stringify(manifest) }, auth.csrf_token);
-    await loadExtensions();
+    await Promise.all([loadExtensions(), loadExtensionRegistry(false)]);
   }
 
   async function toggleExtension(extension: ExtensionDescriptor) {
     await api<ExtensionDescriptor>(`/api/extensions/${encodeURIComponent(extension.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: !extension.enabled }) }, auth.csrf_token);
-    await loadExtensions();
+    await Promise.all([loadExtensions(), loadExtensionRegistry(false)]);
   }
 
   async function removeExtension(extension: ExtensionDescriptor) {
     if (!window.confirm(`Remove ${extension.name}? Existing pages or service cards created from it will remain.`)) return;
     await api<void>(`/api/extensions/${encodeURIComponent(extension.id)}`, { method: "DELETE" }, auth.csrf_token);
-    await loadExtensions();
+    await Promise.all([loadExtensions(), loadExtensionRegistry(false)]);
   }
 
   async function selectTheme(themeId: string) {
@@ -1994,7 +2030,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
             <button className={`command-button account-command ${accountMenuOpen ? "active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={accountMenuOpen} title="Dashboard menu" onClick={() => { setAccountMenuOpen((value) => !value); setAddMenuOpen(false); }}><Settings size={17} /><span className="command-label">Menu</span><ChevronDown className="command-chevron" size={14} /></button>
             {accountMenuOpen && <div className="command-menu command-menu-right" role="menu">
               <div className="command-menu-user"><strong>{auth.username}</strong><small>Administrator</small></div>
-              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); void loadExtensions(); void loadAccount(); }}><Settings size={16} /><span><strong>Settings</strong><small>Account, dashboard and extensions</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); void loadExtensions(); void loadAccount(); void loadExtensionRegistry(false); }}><Settings size={16} /><span><strong>Settings</strong><small>Account, dashboard and extensions</small></span></button>
               <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setConnectionsOpen(true); void loadConnections(); }}><Cable size={16} /><span><strong>Connections</strong><small>TrueNAS and future controllers</small></span></button>
               <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={16} /><span><strong>Appearance</strong><small>Themes and visual editor</small></span></button>
               <div className="command-menu-separator" />
@@ -2203,6 +2239,9 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           settings={dashboardSettings}
           account={accountSummary}
           extensions={extensions}
+          registry={extensionRegistry}
+          registryLoading={extensionRegistryLoading}
+          registryError={extensionRegistryError}
           currentTheme={BUILTIN_THEME_BY_ID[appearance.theme_id]?.name ?? appearance.custom_themes.find((theme) => theme.id === appearance.theme_id)?.name ?? appearance.theme_id}
           importedThemeCount={appearance.custom_themes.length}
           connections={connections}
@@ -2221,6 +2260,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           onImportExtension={importExtensionFile}
           onToggleExtension={toggleExtension}
           onRemoveExtension={removeExtension}
+          onRefreshRegistry={() => loadExtensionRegistry(true)}
+          onInstallRegistryExtension={installRegistryExtension}
         />
       )}
 

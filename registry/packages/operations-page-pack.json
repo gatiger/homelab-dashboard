@@ -1,0 +1,33 @@
+{
+  "format": "homelab-dashboard-extension",
+  "schema_version": 1,
+  "id": "community.operations-pages",
+  "name": "Operations Page Pack",
+  "version": "1.0.0",
+  "author": "Example Community Author",
+  "description": "Example reusable operations dashboard page.",
+  "type": "page_template_pack",
+  "min_dashboard_version": "0.16.0",
+  "capabilities": ["page_templates"],
+  "permissions": ["dashboard:register-templates"],
+  "page_templates": [
+    {
+      "id": "operations-plus",
+      "name": "Operations Plus",
+      "description": "Status, updates, quick links, and notes.",
+      "categories": [
+        {"name": "Overview", "sort_order": 1, "collapsed": false, "icon": "server"},
+        {"name": "Reference", "sort_order": 2, "collapsed": false, "icon": "link"}
+      ],
+      "services": [],
+      "widgets": [
+        {"type": "system_summary", "title": "Dashboard Summary", "category": "Overview", "card_size": "standard", "sort_order": 1, "enabled": true, "config": {"show_services": true, "show_updates": true, "show_connections": true}},
+        {"type": "service_status", "title": "Service Status", "category": "Overview", "card_size": "wide", "sort_order": 2, "enabled": true, "config": {"limit": 8, "show_latency": true}},
+        {"type": "update_overview", "title": "Updates", "category": "Overview", "card_size": "wide", "sort_order": 3, "enabled": true, "config": {"limit": 8, "show_current": false}},
+        {"type": "bookmarks", "title": "Reference Links", "category": "Reference", "card_size": "wide", "sort_order": 1, "enabled": true, "config": {"items": []}},
+        {"type": "note", "title": "Maintenance Notes", "category": "Reference", "card_size": "wide", "sort_order": 2, "enabled": true, "config": {"text": ""}}
+      ]
+    }
+  ],
+  "catalog_entries": []
+}
