@@ -157,12 +157,12 @@ type ServiceUpdateState = {
 
 type UpdateJob = {
   id: string;
-  kind: "check" | "update" | "batch";
+  kind: "check" | "update" | "batch" | "host_update";
   service_id?: number | null;
   active_service_id?: number | null;
   provider?: string | null;
   target?: string | null;
-  state: "queued" | "running" | "success" | "failed" | "rolled_back";
+  state: "queued" | "running" | "reconnecting" | "success" | "failed" | "rolled_back";
   progress: number;
   message: string;
   current_version?: string | null;
@@ -209,6 +209,10 @@ type ManagementProviderDescriptor = {
   connection_type?: string | null;
   target_label: string;
   target_mode: "resource" | "system";
+  update_scope: "service" | "host";
+  requires_reboot: boolean;
+  bulk_eligible: boolean;
+  requires_confirmation: boolean;
   suggested_service_types: string[];
   warning?: string | null;
 };
@@ -222,7 +226,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.19.0";
+const APP_VERSION = "0.20.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -1333,6 +1337,7 @@ function UpdateManagerModal({
   catalogEntries,
   managementProviders,
   canRunUpdates,
+  canRunHostUpdates,
   onClose,
   onCheck,
   onUpdate,
@@ -1345,14 +1350,16 @@ function UpdateManagerModal({
   catalogEntries: CatalogEntry[];
   managementProviders: ManagementProviderDescriptor[];
   canRunUpdates: boolean;
+  canRunHostUpdates: boolean;
   onClose: () => void;
   onCheck: () => void;
   onUpdate: (service: Service) => void;
   onUpdateAll: () => void;
 }) {
   const managed = services.filter((service) => service.management_provider !== "none");
-  const available = managed.filter((service) => states[service.id]?.state === "available" && states[service.id]?.can_update);
-  const active = jobs.find((job) => job.state === "queued" || job.state === "running");
+  const providerFor = (service: Service) => managementProviders.find((provider) => provider.id === service.management_provider);
+  const available = managed.filter((service) => states[service.id]?.state === "available" && states[service.id]?.can_update && providerFor(service)?.bulk_eligible !== false && providerFor(service)?.update_scope !== "host");
+  const active = jobs.find((job) => job.state === "queued" || job.state === "running" || job.state === "reconnecting");
   const serviceName = (id?: number | null) => services.find((service) => service.id === id)?.name ?? "Service";
   const providerName = (id: string) => managementProviders.find((provider) => provider.id === id)?.name ?? id;
   return (
@@ -1384,6 +1391,9 @@ function UpdateManagerModal({
           {managed.length === 0 && <div className="catalog-empty">No services have update management configured yet. Edit a service card to choose any available management provider.</div>}
           {managed.map((service) => {
             const state = states[service.id];
+            const provider = providerFor(service);
+            const isHostUpdate = provider?.update_scope === "host";
+            const mayRun = isHostUpdate ? canRunHostUpdates : canRunUpdates;
             const isActive = active?.active_service_id === service.id || active?.service_id === service.id;
             return (
               <div className="update-row" key={service.id}>
@@ -1395,7 +1405,7 @@ function UpdateManagerModal({
                   {(state?.current_version || state?.latest_version) && <small className="version-line">{state.current_version ?? "?"}{state.latest_version && state.latest_version !== state.current_version ? ` → ${state.latest_version}` : ""}</small>}
                   {state?.message && <small>{state.message}</small>}
                 </div>
-                {canRunUpdates && state?.can_update && <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? "Updating…" : "Update"}</button>}
+                {mayRun && state?.can_update && <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? (active?.state === "reconnecting" ? "Reconnecting…" : "Updating…") : isHostUpdate ? "Update & reboot" : "Update"}</button>}
               </div>
             );
           })}
@@ -1403,7 +1413,7 @@ function UpdateManagerModal({
         {jobs.length > 0 && (
           <div className="update-history">
             <div className="section-title"><History size={16} /><h3>Recent activity</h3></div>
-            {jobs.slice(0, 8).map((job) => <div className="history-row" key={job.id}><span className={`history-dot history-${job.state}`} /> <strong>{job.kind === "update" ? serviceName(job.service_id) : job.kind === "batch" ? "Update all" : "Update check"}</strong><span>{job.message}</span><small>{job.state}</small></div>)}
+            {jobs.slice(0, 8).map((job) => <div className="history-row" key={job.id}><span className={`history-dot history-${job.state}`} /> <strong>{job.kind === "update" || job.kind === "host_update" ? serviceName(job.service_id) : job.kind === "batch" ? "Update all" : "Update check"}</strong><span>{job.message}</span><small>{job.state === "reconnecting" ? "reconnecting" : job.state}</small></div>)}
           </div>
         )}
       </section>
@@ -1411,7 +1421,7 @@ function UpdateManagerModal({
   );
 }
 
-function CardManagementStatus({ service, state, job, manageMode, canUpdate, onUpdate }: { service: Service; state?: ServiceUpdateState; job?: UpdateJob; manageMode: boolean; canUpdate: boolean; onUpdate: (service: Service) => void }) {
+function CardManagementStatus({ service, state, job, manageMode, canUpdate, hostUpdate, onUpdate }: { service: Service; state?: ServiceUpdateState; job?: UpdateJob; manageMode: boolean; canUpdate: boolean; hostUpdate: boolean; onUpdate: (service: Service) => void }) {
   if (service.management_provider === "none") return <div className="card-management-slot card-management-empty" aria-hidden="true"><span>Management not configured</span></div>;
   if (job) return (
     <div className="card-management-slot card-management-running">
@@ -1431,7 +1441,7 @@ function CardManagementStatus({ service, state, job, manageMode, canUpdate, onUp
   return (
     <div className={`card-management-slot management-${current}`} title={state?.message ?? label}>
       <div className={`management-status-line management-${current}`}><span className="management-status-dot" /><strong>{label}</strong>{version && <small className="management-version">{version}</small>}</div>
-      {current === "available" && state?.can_update && !manageMode && canUpdate && <button className="card-update-action" type="button" onClick={() => onUpdate(service)}><ArrowUpCircle size={14} /> Update</button>}
+      {current === "available" && state?.can_update && !manageMode && canUpdate && <button className="card-update-action" type="button" onClick={() => onUpdate(service)}><ArrowUpCircle size={14} /> {hostUpdate ? "Update & reboot" : "Update"}</button>}
     </div>
   );
 }
@@ -1501,6 +1511,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const canManageServices = can("services:manage");
   const canManageSecrets = can("secrets:manage");
   const canRunUpdates = can("updates:run");
+  const canRunHostUpdates = can("updates:host");
   const canManageConnections = can("connections:manage");
   const canManageExtensions = can("extensions:manage");
   const canManageSettings = can("settings:manage");
@@ -1707,12 +1718,22 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
   async function startManagedUpdate(service: Service) {
     const state = updateStates[service.id];
-    if (!state?.can_update) { setError("This management provider supports update detection only."); return; }
+    const provider = managementProviders.find((item) => item.id === service.management_provider);
+    if (!state?.can_update) { setError("This management provider does not currently expose an install action."); return; }
+    const isHostUpdate = provider?.update_scope === "host";
+    if (isHostUpdate && !canRunHostUpdates) { setError("Your role cannot start host-level updates."); return; }
+    if (!isHostUpdate && !canRunUpdates) { setError("Your role cannot start service updates."); return; }
     const versionText = state?.latest_version ? ` to ${state.latest_version}` : "";
-    if (!window.confirm(`Update ${service.name}${versionText}? The service may restart briefly.`)) return;
+    const confirmed = isHostUpdate
+      ? window.confirm(`Update ${service.name}${versionText} and reboot the managed host?\n\nThis is a host-level operation. Services on that host will be interrupted. If Homelab Dashboard runs on the same host, this page will temporarily lose connection and automatically verify the update when Dashboard returns.`)
+      : window.confirm(`Update ${service.name}${versionText}? The service may restart briefly.`);
+    if (!confirmed) return;
     setUpdateBusy(true);
     try {
-      await api<UpdateJob>(`/api/services/${service.id}/update`, { method: "POST" }, auth.csrf_token);
+      const job = isHostUpdate
+        ? await api<UpdateJob>(`/api/services/${service.id}/host-update`, { method: "POST", body: JSON.stringify({ confirm: true }) }, auth.csrf_token)
+        : await api<UpdateJob>(`/api/services/${service.id}/update`, { method: "POST" }, auth.csrf_token);
+      setUpdateJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       await loadUpdateData();
     } catch (err) {
       setError(err instanceof Error ? err.message : `Unable to update ${service.name}.`);
@@ -1720,7 +1741,11 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   async function updateAllAvailable() {
-    const count = Object.values(updateStates).filter((item) => item.state === "available" && item.can_update).length;
+    const count = services.filter((service) => {
+      const state = updateStates[service.id];
+      const provider = managementProviders.find((item) => item.id === service.management_provider);
+      return state?.state === "available" && state.can_update && provider?.bulk_eligible !== false && provider?.update_scope !== "host";
+    }).length;
     if (!count || !window.confirm(`Update ${count} available service${count === 1 ? "" : "s"} sequentially? The batch will stop if an update fails.`)) return;
     setUpdateBusy(true);
     try {
@@ -1756,7 +1781,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     return () => window.clearInterval(updateTimer);
   }, [dashboardSettings.update_status_refresh_seconds]);
 
-  const hasActiveUpdateJob = updateJobs.some((job) => job.state === "queued" || job.state === "running");
+  const hasActiveUpdateJob = updateJobs.some((job) => job.state === "queued" || job.state === "running" || job.state === "reconnecting");
   useEffect(() => {
     if (!hasActiveUpdateJob) return;
     const activeTimer = window.setInterval(() => { void loadUpdateData(); void refreshTelemetry(); }, Math.max(1, dashboardSettings.active_refresh_seconds) * 1000);
@@ -2075,6 +2100,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const pageItemCount = (pageId: number) => services.filter((service) => service.page_id === pageId).length + widgets.filter((widget) => widget.page_id === pageId).length;
   const visibleItemCount = filtered.length + filteredWidgets.length;
   const availableUpdateCount = Object.values(updateStates).filter((item) => item.state === "available").length;
+  const activeHostUpdate = updateJobs.find((job) => job.kind === "host_update" && (job.state === "queued" || job.state === "running" || job.state === "reconnecting"));
   const widgetSummary = {
     totalServices: services.filter((service) => service.enabled).length,
     onlineServices: Object.values(statuses).filter((item) => item.state === "online").length,
@@ -2119,6 +2145,14 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           </div>
         </div>
       </header>
+
+      {activeHostUpdate && (
+        <div className="host-update-banner" role="status">
+          <ArrowUpCircle size={18} />
+          <div><strong>{activeHostUpdate.message}</strong><span>{activeHostUpdate.state === "reconnecting" ? "The managed host may be restarting. Dashboard will keep checking and verify the version when it returns." : "Host-level update in progress. Services on the managed host may become temporarily unavailable."}</span></div>
+          <small>{activeHostUpdate.progress}%</small>
+        </div>
+      )}
 
       <nav className="page-tabs" aria-label="Dashboard pages">
         <div className="page-tab-scroll">
@@ -2248,7 +2282,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                   const serviceStatus = statusPresentation(service);
                   const insight = insights[service.id];
                   const updateState = updateStates[service.id];
-                  const updateJob = updateJobs.find((job) => (job.service_id === service.id || job.active_service_id === service.id) && (job.state === "queued" || job.state === "running"));
+                  const updateJob = updateJobs.find((job) => (job.service_id === service.id || job.active_service_id === service.id) && (job.state === "queued" || job.state === "running" || job.state === "reconnecting"));
                   return (
                     <article
                       className={`card card-${service.card_size} ${manageMode ? "managing-card" : ""} ${service.favorite ? "favorite-card" : ""} ${!service.enabled ? "disabled-card" : ""} ${serviceStatus.state === "offline" ? "offline-card" : ""} ${dragOverItemKey === key ? "drag-over" : ""}`}
@@ -2287,7 +2321,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                         </div>
                         <ExternalLink className="external" size={17} />
                       </a>
-                      <CardManagementStatus service={service} state={updateState} job={updateJob} manageMode={manageMode} canUpdate={canRunUpdates} onUpdate={(item) => void startManagedUpdate(item)} />
+                      <CardManagementStatus service={service} state={updateState} job={updateJob} manageMode={manageMode} canUpdate={(managementProviders.find((provider) => provider.id === service.management_provider)?.update_scope === "host") ? canRunHostUpdates : canRunUpdates} hostUpdate={managementProviders.find((provider) => provider.id === service.management_provider)?.update_scope === "host"} onUpdate={(item) => void startManagedUpdate(item)} />
                       {manageMode && (
                         <div className="card-controls">
                           <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : service.favorite ? "Pinned cards reorder with other pinned cards" : "Drag to reorder with services and widgets"} aria-hidden="true"><GripVertical size={15} /></span>
@@ -2360,6 +2394,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           catalogEntries={catalogEntries}
           managementProviders={managementProviders}
           canRunUpdates={canRunUpdates}
+          canRunHostUpdates={canRunHostUpdates}
           onClose={() => setUpdatesOpen(false)}
           onCheck={() => void checkForUpdates()}
           onUpdate={(service) => void startManagedUpdate(service)}

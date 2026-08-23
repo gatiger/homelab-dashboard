@@ -218,7 +218,18 @@ Additional management providers are tracked separately below rather than making 
 - TrueNAS operating-system update detection through the native update API
 - Detection-only provider support without exposing unsafe update actions
 - Server-side capability gates for single-service updates and Update All
-- Reboot-safe host update orchestration/reconnect remains a follow-up before TrueNAS System installation is enabled
+- Reboot-safe host update orchestration/reconnect ✅ (v0.20)
+
+## Milestone 20 — Safe host update execution ✅
+
+- Generic service-vs-host update scope and reboot/confirmation/bulk capability metadata
+- Dedicated host-update RBAC permission and explicit confirmation API
+- Persistent host-update operation records that survive Dashboard restart
+- Reconnecting state with automatic managed-host readiness/version verification
+- Safe recovery that verifies an interrupted host update without reissuing it
+- Host providers excluded from Update All by capability metadata
+- TrueNAS System Update & reboot as the first host-update implementation
+- Node.js 24-compatible GitHub Actions maintenance
 
 ## Management-provider follow-ups 🚧
 
@@ -227,6 +238,15 @@ Additional management providers are tracked separately below rather than making 
 - Synology provider where supported
 - Kubernetes/Helm provider
 - Private-registry credential support and richer pinned-tag discovery
+
+## UX and documentation follow-ups 🚧
+
+- Manage Mode category/card drag auto-scroll near viewport edges
+- Preserve mouse-wheel scrolling while dragging long-distance category/card moves
+- Beginner-friendly installation path with prerequisites, exact commands, expected results, verification, and troubleshooting
+- Detailed platform-specific installation guides for every officially supported deployment environment
+- Step-by-step usage/integration guides for every management provider and supported application integration
+- TV / Wallboard display mode with large read-only status cards, automatic refresh, and Viewer-role-friendly operation
 
 ## Future optional modules
 

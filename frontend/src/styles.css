@@ -716,3 +716,11 @@ h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1; margin: 0; letter-spacin
   .user-admin-controls label:not(.check-row) { min-width: 0; grid-column: 1 / -1; }
   .user-reset-row { grid-template-columns: 1fr; }
 }
+
+/* v0.20 host-update recovery state */
+.host-update-banner { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 0 0 16px; padding: 13px 15px; border: 1px solid var(--theme-accent); border-radius: 12px; background: var(--theme-accent-soft); }
+.host-update-banner > svg { color: var(--theme-accent); }
+.host-update-banner > div { display: grid; gap: 3px; min-width: 0; }
+.host-update-banner strong { font-size: 0.92rem; }
+.host-update-banner span, .host-update-banner small { color: var(--theme-muted); font-size: 0.78rem; }
+.history-reconnecting { background: var(--theme-accent); animation: pulse 1.6s ease-in-out infinite; }

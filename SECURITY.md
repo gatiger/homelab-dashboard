@@ -52,3 +52,11 @@ v0.17 registry indexes are fetched over HTTPS. Package paths must remain on the 
 v0.18 introduces Owner, Admin, Editor, and Viewer roles backed by explicit server-side permissions. Browser-hidden controls are only a usability feature; protected API routes verify the required permission independently. Sensitive service edits also enforce a separate `secrets:manage` capability so Editor accounts cannot alter saved API keys, saved usernames/passwords, management Connections, or update-provider bindings through crafted API requests.
 
 Disabling an account or resetting its password invalidates that account's active sessions immediately. The application prevents removal, disablement, or demotion of the last enabled Owner. Recovery codes remain per-user high-entropy secrets stored only as digests, and Owners cannot retrieve another user's readable recovery code.
+
+## v0.20 host updates
+
+Host-scoped updates are more disruptive than ordinary application updates and use a separate `updates:host` server-side permission plus explicit confirmation. A host provider is excluded from **Update All** and cannot be started through the normal service-update endpoint.
+
+TrueNAS System installation uses the authenticated native TrueNAS update API. A monitoring-only API key does not need update-write authority; only grant the upstream system-update write permission (including `SYSTEM_UPDATE_WRITE`) when remote host updates are intentionally enabled. Use the least-privileged TrueNAS account/key that supports the operations you need.
+
+Before a host update is started, Dashboard persists the operation and expected version. If Dashboard restarts during the update, recovery verifies the managed host/version but never reissues the disruptive update request. This avoids duplicate execution when Dashboard itself is hosted on the machine being rebooted.

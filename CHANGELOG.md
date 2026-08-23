@@ -4,6 +4,28 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.20.0] - 2026-08-23
+
+### Added
+- Reboot-safe host-update execution framework with persistent SQLite operation state and post-restart recovery.
+- Explicit host-update confirmation endpoint protected by a dedicated `updates:host` permission.
+- TrueNAS System **Update & reboot** support through the native `update.run` JSON-RPC job API.
+- Reconnecting job state and automatic post-reboot TrueNAS readiness/version verification.
+- Provider metadata for host/service update scope, reboot requirements, bulk eligibility, and confirmation requirements.
+- Frontend host-update warning/reconnect banner and role-aware host-update controls.
+
+### Changed
+- Host-scoped providers are excluded from **Update All** by provider capability metadata rather than platform-specific checks.
+- Owner and Admin roles may explicitly start supported host updates; Editor and Viewer remain unable to run updates.
+- Active-job polling continues at the fast interval while a host update is reconnecting.
+- GitHub Actions workflows now use Node.js 24-compatible major versions of the official checkout, setup, Docker build, login, and metadata actions.
+- FastAPI startup initialization now uses the supported lifespan hook instead of the deprecated startup-event decorator.
+
+### Security
+- Host updates require a separate explicit confirmation request and cannot be triggered through the ordinary service-update endpoint.
+- A recovering Dashboard never reissues an interrupted host-update command after restart; it only verifies whether the managed host returned on the expected version.
+- TrueNAS System updates are never included in Update All. A TrueNAS API credential must have the upstream permissions required to install system updates before Dashboard can execute one.
+
 ## [0.19.0] - 2026-08-23
 
 ### Added

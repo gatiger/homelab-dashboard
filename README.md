@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.19.0
+ghcr.io/gatiger/homelab-dashboard:0.20.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -81,7 +81,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Safe importable JSON theme extensions with no executable code
 - Open-ended service identifiers for future templates/plugins
 - Shared integration capability/activity model for progress-aware service cards
-- Capability-based Update Manager with one-click Docker Compose/Dockge and TrueNAS App updates plus detection-only TrueNAS system updates
+- Capability-based Update Manager with Docker Compose/Dockge, TrueNAS App, and reboot-safe explicit TrueNAS System updates
 - Reusable management Connections so platform credentials do not require visible controller cards
 - Standardized managed-card update indicators with glowing current/available/error states
 - Automatic in-browser telemetry/update-state refresh without manually reloading the page
@@ -100,9 +100,9 @@ See [Docker integration](docs/configuration/docker-integration.md).
 
 ## Update Manager
 
-The **Updates** screen can discover and, where the provider safely supports it, apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers, so the same service can be monitored one way and updated another. v0.19 makes management providers capability-based and runtime-discovered rather than hard-coding a fixed platform list.
+The **Updates** screen can discover and, where the provider safely supports it, apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers, so the same service can be monitored one way and updated another. Management providers are capability-based and runtime-discovered rather than hard-coded to a fixed platform list. v0.20 adds the first generic host-update execution/recovery path.
 
-TrueNAS App updates use a reusable TrueNAS Connection (URL + encrypted API credentials), so no visible TrueNAS dashboard card is required. A TrueNAS card can also use **TrueNAS System** to detect operating-system updates; installation is intentionally detection-only in v0.19 while reboot-safe host-update recovery is developed. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
+TrueNAS App updates use a reusable TrueNAS Connection (URL + encrypted API credentials), so no visible TrueNAS dashboard card is required. A TrueNAS card can use **TrueNAS System** to detect an operating-system update and, for Owner/Admin users with sufficiently privileged TrueNAS API credentials, start an explicit **Update & reboot** operation. Host updates are never included in **Update All**. If Dashboard itself runs on that TrueNAS host, the persisted operation is recovered after Dashboard returns and the new version is verified. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
 
 ```bash
 docker compose -f compose.yaml -f compose.management.yaml up -d

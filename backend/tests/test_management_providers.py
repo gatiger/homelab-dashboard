@@ -13,11 +13,21 @@ def point_data_dir(tmp_path: Path) -> None:
     main.SECRET_KEY_PATH = tmp_path / "secret.key"
 
 
+class DummyThread:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+    def start(self):
+        return None
+
+
 def test_management_provider_registry_and_validation(tmp_path: Path, monkeypatch) -> None:
     point_data_dir(tmp_path)
     with TestClient(main.app) as client:
         auth = client.post("/api/auth/setup", json={"username": "owner", "password": "OwnerPass123!"}).json()
         csrf = auth["csrf_token"]
+        assert "updates:host" in auth["permissions"]
 
         response = client.get("/api/management/providers")
         assert response.status_code == 200
@@ -26,8 +36,12 @@ def test_management_provider_registry_and_validation(tmp_path: Path, monkeypatch
         assert "update" in providers["docker_compose"]["capabilities"]
         assert "update" in providers["truenas_app"]["capabilities"]
         assert "check" in providers["truenas_system"]["capabilities"]
-        assert "update" not in providers["truenas_system"]["capabilities"]
+        assert "update" in providers["truenas_system"]["capabilities"]
         assert providers["truenas_system"]["target_mode"] == "system"
+        assert providers["truenas_system"]["update_scope"] == "host"
+        assert providers["truenas_system"]["requires_reboot"] is True
+        assert providers["truenas_system"]["bulk_eligible"] is False
+        assert providers["truenas_system"]["requires_confirmation"] is True
 
         connection = client.post(
             "/api/connections",
@@ -74,9 +88,41 @@ def test_management_provider_registry_and_validation(tmp_path: Path, monkeypatch
             },
         )
         assert managed.status_code == 201, managed.text
-        blocked = client.post(f"/api/services/{managed.json()['id']}/update", headers={"X-CSRF-Token": csrf})
+        service_id = managed.json()["id"]
+
+        # Save a deterministic available state before exercising the explicit host-update route.
+        main.save_update_state(main.ServiceUpdateState(
+            service_id=service_id,
+            provider="truenas_system",
+            target="system",
+            state="available",
+            current_version="25.10.1",
+            latest_version="25.10.2",
+            checked_at=main.iso_now(),
+            message="Update available",
+            can_update=True,
+        ))
+
+        blocked = client.post(f"/api/services/{service_id}/update", headers={"X-CSRF-Token": csrf})
         assert blocked.status_code == 400
-        assert "detection only" in blocked.json()["detail"].lower()
+        assert "host-update" in blocked.json()["detail"].lower()
+
+        no_confirm = client.post(
+            f"/api/services/{service_id}/host-update",
+            headers={"X-CSRF-Token": csrf},
+            json={"confirm": False},
+        )
+        assert no_confirm.status_code == 400
+
+        monkeypatch.setattr(main.threading, "Thread", DummyThread)
+        host_update = client.post(
+            f"/api/services/{service_id}/host-update",
+            headers={"X-CSRF-Token": csrf},
+            json={"confirm": True},
+        )
+        assert host_update.status_code == 202, host_update.text
+        assert host_update.json()["kind"] == "host_update"
+        assert host_update.json()["latest_version"] == "25.10.2"
 
         rejected = client.post(
             "/api/services",
@@ -115,5 +161,113 @@ def test_truenas_system_status_parser_and_capability_gate() -> None:
     assert latest == "25.10.2"
     assert available is True
     assert notes == "https://example.invalid/release-notes"
-    assert main.management_provider_can_update("truenas_system") is False
+    assert main.management_provider_can_update("truenas_system") is True
+    assert main.management_provider_bulk_eligible("truenas_system") is False
     assert main.management_provider_can_update("docker_compose") is True
+    assert main.management_provider_bulk_eligible("docker_compose") is True
+
+
+def test_host_update_restart_state_is_preserved_for_recovery(tmp_path: Path, monkeypatch) -> None:
+    point_data_dir(tmp_path)
+    main.init_db()
+
+    host_job = main.create_update_job(
+        "host_update", service_id=101, provider="truenas_system", target="system", message="Host update queued"
+    )
+    main.update_job(
+        host_job.id,
+        state="reconnecting",
+        progress=90,
+        current_version="25.10.1",
+        latest_version="25.10.2",
+        started_at=main.iso_now(),
+    )
+    normal_job = main.create_update_job(
+        "update", service_id=102, provider="docker_compose", target="stack:service", message="Service update queued"
+    )
+    main.update_job(normal_job.id, state="running", progress=40, started_at=main.iso_now())
+
+    # Simulate application startup against the same persistent database.
+    main.init_db()
+
+    with main.db() as connection:
+        preserved = connection.execute("SELECT state, latest_version FROM update_jobs WHERE id = ?", (host_job.id,)).fetchone()
+        interrupted = connection.execute("SELECT state, message FROM update_jobs WHERE id = ?", (normal_job.id,)).fetchone()
+
+    assert preserved["state"] == "reconnecting"
+    assert preserved["latest_version"] == "25.10.2"
+    assert interrupted["state"] == "failed"
+    assert "dashboard restart" in interrupted["message"].lower()
+
+    started: list[tuple[object, tuple[object, ...]]] = []
+
+    class CaptureThread:
+        def __init__(self, *, target=None, args=(), **kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr(main.threading, "Thread", CaptureThread)
+    main.recover_host_update_jobs()
+
+    assert len(started) == 1
+    assert started[0][0] is main.resume_host_update_worker
+    assert started[0][1] == (host_job.id, 101, "25.10.2")
+
+
+def test_truenas_host_update_requests_reboot_then_verifies(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class FakeTrueNAS:
+        def call(self, method: str, params=None):
+            calls.append((method, params))
+            if method == "update.status":
+                return {"code": "NORMAL", "status": {"new_version": {"version": "25.10.2"}}}
+            if method == "system.version_short":
+                return "25.10.1"
+            if method == "update.run":
+                return 77
+            if method == "core.get_jobs":
+                return [{"id": 77, "state": "SUCCESS", "progress": {"percent": 100, "description": "Done"}}]
+            raise AssertionError(method)
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeTrueNAS()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    reconnect: list[tuple[str, int, str | None]] = []
+    monkeypatch.setattr(main, "truenas_client_for_managed_service", lambda service: FakeContext())
+    monkeypatch.setattr(main, "update_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "wait_for_truenas_system_reconnect", lambda job_id, service_id, expected: reconnect.append((job_id, service_id, expected)))
+
+    now = main.iso_now()
+    service = main.Service(
+        id=9,
+        name="TrueNAS",
+        type="truenas",
+        url="https://truenas.local",
+        category="Infrastructure",
+        page_id=1,
+        management_provider="truenas_system",
+        management_target="system",
+        management_connection_id=1,
+        created_at=now,
+        updated_at=now,
+    )
+
+    main.perform_truenas_system_update(service, "job-1")
+
+    update_call = next(params for method, params in calls if method == "update.run")
+    assert update_call == [{
+        "dataset_name": None,
+        "resume": False,
+        "train": None,
+        "version": "25.10.2",
+        "reboot": True,
+    }]
+    assert reconnect == [("job-1", 9, "25.10.2")]

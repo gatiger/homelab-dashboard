@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from http.cookies import SimpleCookie
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,14 +41,25 @@ DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "").strip().rstrip("/")
 UPDATE_AGENT_URL = os.getenv("UPDATE_AGENT_URL", "").strip().rstrip("/")
 UPDATE_AGENT_TOKEN = os.getenv("UPDATE_AGENT_TOKEN", "").strip()
 UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 3600))
+HOST_UPDATE_RECONNECT_TIMEOUT = max(300, min(int(os.getenv("HOST_UPDATE_RECONNECT_TIMEOUT", "1800")), 7200))
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 EXTENSION_REGISTRY_URL = os.getenv("EXTENSION_REGISTRY_URL", "https://raw.githubusercontent.com/gatiger/homelab-dashboard/main/registry/index.json").strip()
 EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TIMEOUT", "8")), 30.0))
 EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.19.0"
-app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION)
+APP_VERSION = "0.20.0"
+
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    init_db()
+    recover_host_update_jobs()
+    threading.Thread(target=automatic_update_check_loop, daemon=True, name="update-check-loop").start()
+    yield
+
+
+app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION, lifespan=app_lifespan)
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -65,12 +76,12 @@ UserRole = Literal["owner", "admin", "editor", "viewer"]
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "owner": {
         "dashboard:view", "dashboard:edit", "services:manage", "secrets:manage",
-        "updates:run", "connections:manage", "extensions:manage", "settings:manage",
+        "updates:run", "updates:host", "connections:manage", "extensions:manage", "settings:manage",
         "users:manage",
     },
     "admin": {
         "dashboard:view", "dashboard:edit", "services:manage", "secrets:manage",
-        "updates:run", "connections:manage", "extensions:manage", "settings:manage",
+        "updates:run", "updates:host", "connections:manage", "extensions:manage", "settings:manage",
     },
     "editor": {"dashboard:view", "dashboard:edit", "services:manage"},
     "viewer": {"dashboard:view"},
@@ -1089,6 +1100,10 @@ class ManagementProviderDescriptor(BaseModel):
     connection_type: str | None = None
     target_label: str = "Managed resource"
     target_mode: Literal["resource", "system"] = "resource"
+    update_scope: Literal["service", "host"] = "service"
+    requires_reboot: bool = False
+    bulk_eligible: bool = True
+    requires_confirmation: bool = False
     suggested_service_types: list[str] = Field(default_factory=list)
     warning: str | None = None
 
@@ -1102,7 +1117,11 @@ class ManagementProviderDescriptor(BaseModel):
 
 
 UpdateStateName = Literal["unknown", "checking", "current", "available", "unavailable", "unconfigured"]
-UpdateJobState = Literal["queued", "running", "success", "failed", "rolled_back"]
+UpdateJobState = Literal["queued", "running", "reconnecting", "success", "failed", "rolled_back"]
+
+
+class HostUpdateRequest(BaseModel):
+    confirm: bool = False
 
 
 class ManagedResource(BaseModel):
@@ -1130,7 +1149,7 @@ class ServiceUpdateState(BaseModel):
 
 class UpdateJob(BaseModel):
     id: str
-    kind: Literal["check", "update", "batch"]
+    kind: Literal["check", "update", "batch", "host_update"]
     service_id: int | None = None
     active_service_id: int | None = None
     provider: str | None = None
@@ -1181,13 +1200,17 @@ MANAGEMENT_PROVIDERS: dict[str, ManagementProviderDescriptor] = {
     "truenas_system": ManagementProviderDescriptor(
         id="truenas_system",
         name="TrueNAS System",
-        description="Monitor the TrueNAS operating-system release using the native TrueNAS update API.",
-        capabilities=["check", "release_notes"],
+        description="Monitor and safely install TrueNAS operating-system releases using the native TrueNAS update API.",
+        capabilities=["check", "update", "reboot", "reconnect", "release_notes"],
         connection_type="truenas",
         target_label="TrueNAS system",
         target_mode="system",
+        update_scope="host",
+        requires_reboot=True,
+        bulk_eligible=False,
+        requires_confirmation=True,
         suggested_service_types=["truenas"],
-        warning="System update installation is intentionally detection-only until reboot-safe reconnect and recovery handling is available.",
+        warning="Host updates require explicit confirmation and are never included in Update All. If Dashboard runs on this host, it will temporarily disconnect during the reboot.",
     ),
 }
 
@@ -1199,6 +1222,11 @@ def management_provider_descriptor(provider_id: str) -> ManagementProviderDescri
 def management_provider_can_update(provider_id: str) -> bool:
     descriptor = management_provider_descriptor(provider_id)
     return bool(descriptor and descriptor.can_update)
+
+
+def management_provider_bulk_eligible(provider_id: str) -> bool:
+    descriptor = management_provider_descriptor(provider_id)
+    return bool(descriptor and descriptor.can_update and descriptor.bulk_eligible and descriptor.update_scope == "service")
 
 
 def validate_management_provider_id(provider_id: str) -> None:
@@ -1617,7 +1645,8 @@ def init_db() -> None:
         now = iso_now()
         connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
         connection.execute("DELETE FROM dashboard_sessions WHERE expires_at <= ?", (now,))
-        connection.execute("UPDATE update_jobs SET state = 'failed', progress = 100, message = 'Interrupted by dashboard restart', finished_at = ? WHERE state IN ('queued', 'running')", (now,))
+        connection.execute("UPDATE update_jobs SET state = 'failed', progress = 100, message = 'Interrupted by dashboard restart', finished_at = ? WHERE state IN ('queued', 'running') AND kind != 'host_update'", (now,))
+        connection.execute("UPDATE update_jobs SET state = 'failed', progress = 100, message = 'Host update was interrupted before it started', finished_at = ? WHERE state = 'queued' AND kind = 'host_update'", (now,))
 
 
 def automatic_update_check_loop() -> None:
@@ -1630,7 +1659,7 @@ def automatic_update_check_loop() -> None:
             with db() as connection:
                 settings = read_dashboard_settings(connection)
                 interval_hours = settings.update_check_interval_hours
-                active_job = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued', 'running') LIMIT 1").fetchone()
+                active_job = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued', 'running', 'reconnecting') LIMIT 1").fetchone()
             now = time.monotonic()
             due = interval_hours > 0 and (last_run == 0.0 or now - last_run >= interval_hours * 3600)
             if due and not active_job:
@@ -1646,12 +1675,6 @@ def automatic_update_check_loop() -> None:
             pass
         # Short wake interval lets Settings changes take effect without a restart.
         time.sleep(300)
-
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-    threading.Thread(target=automatic_update_check_loop, daemon=True, name="update-check-loop").start()
 
 
 def get_fernet() -> Fernet:
@@ -1840,6 +1863,7 @@ require_users_read = read_permission_dependency("users:manage")
 require_dashboard_edit = permission_dependency("dashboard:edit")
 require_services_manage = permission_dependency("services:manage")
 require_updates_run = permission_dependency("updates:run")
+require_host_updates_run = permission_dependency("updates:host")
 require_connections_manage = permission_dependency("connections:manage")
 require_extensions_manage = permission_dependency("extensions:manage")
 require_settings_manage = permission_dependency("settings:manage")
@@ -2935,7 +2959,7 @@ def check_truenas_system_update(service: Service, checked_at: str) -> ServiceUpd
     with truenas_client_for_managed_service(service) as client:
         current_version, latest_version, available, release_notes_url = truenas_system_update_status(client)
     if available:
-        message = "TrueNAS system update available · detection only in v0.19"
+        message = "TrueNAS system update available · explicit host confirmation required"
         if release_notes_url:
             message += " · release notes available in TrueNAS"
     else:
@@ -2943,7 +2967,7 @@ def check_truenas_system_update(service: Service, checked_at: str) -> ServiceUpd
     return ServiceUpdateState(
         service_id=service.id, provider=service.management_provider, target=service.management_target,
         state="available" if available else "current", current_version=current_version,
-        latest_version=latest_version, checked_at=checked_at, message=message, can_update=False,
+        latest_version=latest_version, checked_at=checked_at, message=message, can_update=available,
     )
 
 
@@ -3072,6 +3096,120 @@ def perform_truenas_update(service: Service, job_id: str, start: int = 5, end: i
         raise RuntimeError("TrueNAS app upgrade timed out")
 
 
+def wait_for_truenas_system_reconnect(job_id: str, service_id: int, expected_version: str | None) -> None:
+    deadline = time.time() + HOST_UPDATE_RECONNECT_TIMEOUT
+    last_detail = None
+    while time.time() < deadline:
+        try:
+            service = row_to_service(get_service_row(service_id))
+            with truenas_client_for_managed_service(service) as client:
+                ready = bool(client.call("system.ready"))
+                current_raw = client.call("system.version_short")
+                current_version = str(current_raw or "").strip() or None
+            if ready and (not expected_version or current_version == expected_version):
+                save_update_state(ServiceUpdateState(
+                    service_id=service.id, provider=service.management_provider, target=service.management_target,
+                    state="current", current_version=current_version, latest_version=current_version, checked_at=iso_now(),
+                    message="Host update completed and the system is ready", can_update=False,
+                ))
+                update_job(
+                    job_id, state="success", progress=100, message="Host update completed; system is back online",
+                    latest_version=current_version or expected_version, detail=None, finished_at=iso_now(), active_service_id=None,
+                )
+                return
+            last_detail = f"System responded with version {current_version or 'unknown'} but is not ready on the expected version yet"
+            update_job(job_id, state="reconnecting", progress=94, message="Waiting for the updated host to become ready", detail=last_detail)
+        except Exception as exc:
+            last_detail = str(exc)[:500]
+            update_job(job_id, state="reconnecting", progress=92, message="Host is restarting; waiting to reconnect", detail=None)
+        time.sleep(8)
+    update_job(
+        job_id, state="failed", progress=100, message="Host update could not be verified after restart",
+        detail=(last_detail or "The managed host did not return before the reconnect timeout")[:1200], finished_at=iso_now(),
+    )
+
+
+def perform_truenas_system_update(service: Service, job_id: str) -> None:
+    if service.management_target != "system":
+        raise RuntimeError("TrueNAS system update target is incomplete")
+    with truenas_client_for_managed_service(service) as client:
+        current_version, latest_version, available, _ = truenas_system_update_status(client)
+        if not available or not latest_version:
+            raise RuntimeError("TrueNAS does not currently report a system update")
+        update_job(
+            job_id, state="running", progress=5, message="Starting TrueNAS system update",
+            current_version=current_version, latest_version=latest_version, detail=None,
+        )
+        # TrueNAS update.run is a job method. Reboot is requested as part of the
+        # update so the new boot environment is activated immediately.
+        result = client.call("update.run", [{
+            "dataset_name": None,
+            "resume": False,
+            "train": None,
+            "version": latest_version,
+            "reboot": True,
+        }])
+        job_number = result if isinstance(result, int) and not isinstance(result, bool) else None
+        if job_number is not None:
+            deadline = time.time() + UPDATE_JOB_TIMEOUT
+            while time.time() < deadline:
+                try:
+                    jobs = client.call("core.get_jobs", [[["id", "=", job_number]], {}])
+                except Exception:
+                    # A disconnect after the update job has started is expected once
+                    # the host begins rebooting. Verification continues below.
+                    break
+                info = jobs[0] if isinstance(jobs, list) and jobs and isinstance(jobs[0], dict) else None
+                if info:
+                    progress_info = info.get("progress") if isinstance(info.get("progress"), dict) else {}
+                    percent = float(progress_info.get("percent") or 0)
+                    description = str(progress_info.get("description") or "Applying TrueNAS system update")
+                    mapped = 10 + round(min(100.0, max(0.0, percent)) * 0.78)
+                    update_job(job_id, progress=min(88, mapped), message=description[:180])
+                    job_state = str(info.get("state") or "").upper()
+                    if job_state in {"FAILED", "ABORTED"}:
+                        raise RuntimeError(str(info.get("error") or f"TrueNAS system update {job_state.lower()}"))
+                    if job_state == "SUCCESS":
+                        break
+                time.sleep(3)
+        update_job(
+            job_id, state="reconnecting", progress=90, message="Update applied; waiting for TrueNAS to reboot and reconnect",
+            current_version=current_version, latest_version=latest_version, detail=None,
+        )
+    wait_for_truenas_system_reconnect(job_id, service.id, latest_version)
+
+
+def host_update_worker(job_id: str, service_id: int) -> None:
+    update_job(job_id, state="running", started_at=iso_now(), progress=1, message="Preparing host update")
+    try:
+        service = row_to_service(get_service_row(service_id))
+        if service.management_provider != "truenas_system":
+            raise RuntimeError("This host update provider is not implemented")
+        perform_truenas_system_update(service, job_id)
+    except Exception as exc:
+        update_job(job_id, state="failed", progress=100, message="Host update failed", detail=str(exc)[:1200], finished_at=iso_now())
+
+
+def resume_host_update_worker(job_id: str, service_id: int, expected_version: str | None) -> None:
+    update_job(job_id, state="reconnecting", progress=91, message="Dashboard restarted during host update; verifying the managed host", detail=None)
+    wait_for_truenas_system_reconnect(job_id, service_id, expected_version)
+
+
+def recover_host_update_jobs() -> None:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT id, service_id, latest_version FROM update_jobs WHERE kind = 'host_update' AND state IN ('running', 'reconnecting') ORDER BY created_at"
+        ).fetchall()
+    for row in rows:
+        if row["service_id"] is None:
+            update_job(row["id"], state="failed", progress=100, message="Host update recovery is missing a service", finished_at=iso_now())
+            continue
+        threading.Thread(
+            target=resume_host_update_worker, args=(row["id"], int(row["service_id"]), row["latest_version"]), daemon=True,
+            name=f"host-update-recovery-{row['id'][:8]}",
+        ).start()
+
+
 MANAGEMENT_UPDATE_PERFORMERS = {
     "docker_compose": perform_docker_update,
     "truenas_app": perform_truenas_update,
@@ -3088,6 +3226,8 @@ def perform_service_update(service_id: int, job_id: str, start: int = 5, end: in
         raise RuntimeError(f"Unsupported management provider: {service.management_provider}")
     if not descriptor.can_update:
         raise RuntimeError(f"{descriptor.name} supports update detection only in this dashboard version")
+    if descriptor.update_scope == "host":
+        raise RuntimeError(f"{descriptor.name} requires the explicit host-update workflow")
     performer = MANAGEMENT_UPDATE_PERFORMERS.get(service.management_provider)
     if not performer:
         raise RuntimeError(f"{descriptor.name} does not provide an update installer")
@@ -3119,7 +3259,7 @@ def batch_update_worker(job_id: str) -> None:
         with db() as connection:
             cached_rows = connection.execute("""SELECT s.id, s.name, s.management_provider FROM services s JOIN service_update_state u ON u.service_id=s.id
                                                 WHERE u.state='available' AND s.management_provider!='none' ORDER BY s.name COLLATE NOCASE""").fetchall()
-        cached = [item for item in cached_rows if management_provider_can_update(item["management_provider"] or "none")]
+        cached = [item for item in cached_rows if management_provider_bulk_eligible(item["management_provider"] or "none")]
         if not cached:
             update_job(job_id, state="success", progress=100, message="No available updates", finished_at=iso_now(), active_service_id=None)
             return
@@ -3332,7 +3472,7 @@ def update_statuses(_: SessionUser = Depends(require_auth)) -> list[ServiceUpdat
 @app.post("/api/updates/check", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
 def start_update_check(_: SessionUser = Depends(require_updates_run)) -> UpdateJob:
     with db() as connection:
-        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
+        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running','reconnecting') LIMIT 1").fetchone()
     if active:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another update job is already running")
     job = create_update_job("check", message="Update check queued")
@@ -3354,8 +3494,10 @@ def start_service_update(service_id: int, _: SessionUser = Depends(require_updat
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported management provider: {service.management_provider}")
     if not descriptor.can_update:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{descriptor.name} supports update detection only in this dashboard version")
+    if descriptor.update_scope == "host":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{descriptor.name} requires explicit host-update confirmation")
     with db() as connection:
-        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
+        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running','reconnecting') LIMIT 1").fetchone()
     if active:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another update job is already running")
     job = create_update_job("update", service_id=service_id, provider=service.management_provider, target=service.management_target, message=f"{service.name} update queued")
@@ -3363,10 +3505,48 @@ def start_service_update(service_id: int, _: SessionUser = Depends(require_updat
     return job
 
 
+@app.post("/api/services/{service_id}/host-update", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
+def start_host_update(service_id: int, payload: HostUpdateRequest, _: SessionUser = Depends(require_host_updates_run)) -> UpdateJob:
+    if not payload.confirm:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Host updates require explicit confirmation")
+    try:
+        row = get_service_row(service_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    service = row_to_service(row)
+    descriptor = management_provider_descriptor(service.management_provider)
+    if not descriptor or descriptor.update_scope != "host" or not descriptor.can_update:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This service is not configured for host-level updates")
+    if not service.management_target:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Host update management is incomplete")
+    with db() as connection:
+        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running','reconnecting') LIMIT 1").fetchone()
+        cached = connection.execute("SELECT * FROM service_update_state WHERE service_id = ?", (service_id,)).fetchone()
+    if active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another update job is already running")
+    current_version = cached["current_version"] if cached else None
+    latest_version = cached["latest_version"] if cached else None
+    if not cached or cached["state"] != "available":
+        checked = check_service_update(row)
+        current_version = checked.current_version
+        latest_version = checked.latest_version
+        if checked.state != "available":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No host update is currently available")
+    job = create_update_job(
+        "host_update", service_id=service_id, provider=service.management_provider, target=service.management_target,
+        message=f"{service.name} host update queued",
+    )
+    update_job(job.id, current_version=current_version, latest_version=latest_version)
+    with db() as connection:
+        job_row = connection.execute("SELECT * FROM update_jobs WHERE id = ?", (job.id,)).fetchone()
+    threading.Thread(target=host_update_worker, args=(job.id, service_id), daemon=True, name=f"host-update-{job.id[:8]}").start()
+    return row_to_update_job(job_row)
+
+
 @app.post("/api/updates/update-all", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
 def start_update_all(_: SessionUser = Depends(require_updates_run)) -> UpdateJob:
     with db() as connection:
-        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
+        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running','reconnecting') LIMIT 1").fetchone()
     if active:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another update job is already running")
     job = create_update_job("batch", message="Update-all queued")

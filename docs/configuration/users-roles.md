@@ -7,7 +7,7 @@ Homelab Dashboard v0.18 supports multiple local accounts. The first account crea
 | Role | Intended use | Key permissions |
 |---|---|---|
 | Owner | Primary homelab administrator | Everything, including user management |
-| Admin | Trusted operational administrator | Dashboard/services, saved credentials, Connections, Extensions, Settings, and updates |
+| Admin | Trusted operational administrator | Dashboard/services, saved credentials, Connections, Extensions, Settings, service updates, and explicitly confirmed supported host updates |
 | Editor | Dashboard/content maintainer | Pages, categories, widgets, and normal service-card metadata; no saved credentials or update-management configuration |
 | Viewer | Read-only household/team access | View dashboard, health, activity, and cached update status |
 
@@ -30,6 +30,10 @@ Homelab Dashboard prevents disabling, demoting, or deleting the last enabled Own
 ## Credentials and Editors
 
 Editors can create and edit ordinary service cards, pages, categories, and widgets. They cannot add/change/remove service API keys, saved usernames/passwords, management-provider links, or management Connections. Those fields require Admin or Owner permissions.
+
+## Update permissions
+
+Owner and Admin accounts can run normal service updates. They can also start a provider-declared **host update** only through the separate confirmation flow. Host updates may reboot infrastructure and are never part of **Update All**. Editor and Viewer accounts can see cached update status/history but cannot start updates.
 
 ## Recovery
 
