@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.10.0
+ghcr.io/gatiger/homelab-dashboard:0.11.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -75,13 +75,27 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Prowlarr indexer/health insight
 - qBittorrent and SABnzbd live queue/download progress with speed and ETA when available
 - Immich server/storage statistics
-- TrueNAS pool health/storage plus scrub, resilver, and expansion progress through the REST compatibility API
+- TrueNAS pool health/storage plus scrub/resilver progress, with current JSON-RPC WebSocket support and legacy REST fallback
 - Optional read-only local Docker host overview
 - System, light/dark, and multiple color themes with persistent appearance settings
 - Safe importable JSON theme extensions with no executable code
 - Open-ended service identifiers for future templates/plugins
 - Shared integration capability/activity model for progress-aware service cards
+- Update Manager with one-click Docker Compose/Dockge and TrueNAS App updates
+- Sequential Update All, health verification, update history, and Docker rollback on failed health checks
 
+
+## Update Manager
+
+The **Updates** screen can discover and apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers (for example Docker Compose or TrueNAS Apps), so the same service can be monitored one way and updated another.
+
+TrueNAS App updates use the configured TrueNAS card and API key directly. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
+
+```bash
+docker compose -f compose.yaml -f compose.management.yaml up -d
+```
+
+The update agent is not required for normal dashboard use. See [Update Manager](docs/configuration/update-manager.md).
 
 ## Themes and extensions
 
@@ -160,7 +174,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Project status / roadmap
 
-v0.10 completes the original Milestone 4 service-aware integrations and introduces a reusable capability/activity model with progress-aware cards. Future work includes widgets, broader import/export, SSO options, and a permission-aware plugin model.
+v0.11 adds the Update Manager and management-provider architecture. A service can use its native API for status/activity while Docker Compose, Dockge, TrueNAS, or future providers independently handle lifecycle updates. Future work includes widgets, broader import/export, SSO options, more management providers, and a permission-aware plugin model.
 
 See [CHANGELOG.md](CHANGELOG.md), [ROADMAP](docs/ROADMAP.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 

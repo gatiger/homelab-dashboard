@@ -9,7 +9,9 @@ import re
 import secrets
 import sqlite3
 import ssl
+import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
@@ -19,6 +21,8 @@ from typing import Iterator, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
+
+from websocket import WebSocketTimeoutException, create_connection
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, status
@@ -34,9 +38,13 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "ye
 STATUS_TIMEOUT = max(1.0, min(float(os.getenv("STATUS_TIMEOUT", "4")), 15.0))
 STATUS_WORKERS = max(1, min(int(os.getenv("STATUS_WORKERS", "8")), 32))
 DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "").strip().rstrip("/")
+UPDATE_AGENT_URL = os.getenv("UPDATE_AGENT_URL", "").strip().rstrip("/")
+UPDATE_AGENT_TOKEN = os.getenv("UPDATE_AGENT_TOKEN", "").strip()
+UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 3600))
+UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-app = FastAPI(title=f"{APP_NAME} API", version="0.10.0")
+app = FastAPI(title=f"{APP_NAME} API", version="0.11.0")
 
 # Vite development origin. Production traffic is same-origin through nginx.
 app.add_middleware(
@@ -89,6 +97,17 @@ class ServiceBase(BaseModel):
     auth_username: str | None = Field(default=None, max_length=256, exclude=True)
     auth_password: str | None = Field(default=None, max_length=512, exclude=True)
     clear_auth_credentials: bool = Field(default=False, exclude=True)
+    management_provider: Literal["none", "docker_compose", "truenas_app"] = "none"
+    management_target: str | None = Field(default=None, max_length=300)
+    management_controller_service_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("management_target")
+    @classmethod
+    def trim_management_target(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
     @field_validator("name", "category")
     @classmethod
@@ -128,6 +147,7 @@ class ServiceUpdate(ServiceBase):
 class Service(ServiceBase):
     id: int
     has_api_key: bool = False
+    has_auth_username: bool = False
     has_auth_credentials: bool = False
     created_at: str
     updated_at: str
@@ -355,6 +375,51 @@ class IntegrationDescriptor(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
 
 
+UpdateStateName = Literal["unknown", "checking", "current", "available", "unavailable", "unconfigured"]
+UpdateJobState = Literal["queued", "running", "success", "failed", "rolled_back"]
+
+
+class ManagedResource(BaseModel):
+    id: str
+    name: str
+    provider: Literal["docker_compose", "truenas_app"]
+    current_version: str | None = None
+    latest_version: str | None = None
+    update_available: bool | None = None
+    state: str | None = None
+    detail: str | None = None
+
+
+class ServiceUpdateState(BaseModel):
+    service_id: int
+    provider: Literal["none", "docker_compose", "truenas_app"]
+    target: str | None = None
+    state: UpdateStateName = "unknown"
+    current_version: str | None = None
+    latest_version: str | None = None
+    checked_at: str | None = None
+    message: str | None = None
+    can_update: bool = False
+
+
+class UpdateJob(BaseModel):
+    id: str
+    kind: Literal["check", "update", "batch"]
+    service_id: int | None = None
+    active_service_id: int | None = None
+    provider: str | None = None
+    target: str | None = None
+    state: UpdateJobState
+    progress: int = Field(ge=0, le=100)
+    message: str
+    current_version: str | None = None
+    latest_version: str | None = None
+    detail: str | None = None
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
 INTEGRATIONS: dict[str, IntegrationDescriptor] = {
     "jellyfin": IntegrationDescriptor(type="jellyfin", name="Jellyfin", auth="api_key", capabilities=["health", "sessions"]),
     "sonarr": IntegrationDescriptor(type="sonarr", name="Sonarr", auth="api_key", capabilities=["health", "activity", "progress", "queue", "upcoming"]),
@@ -414,6 +479,12 @@ def ensure_service_migrations(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE services ADD COLUMN auth_username_encrypted TEXT")
     if "auth_password_encrypted" not in columns:
         connection.execute("ALTER TABLE services ADD COLUMN auth_password_encrypted TEXT")
+    if "management_provider" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN management_provider TEXT NOT NULL DEFAULT 'none'")
+    if "management_target" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN management_target TEXT")
+    if "management_controller_service_id" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN management_controller_service_id INTEGER")
 
 
 def ensure_default_page(connection: sqlite3.Connection) -> None:
@@ -547,8 +618,41 @@ def init_db() -> None:
                 api_key_encrypted TEXT,
                 auth_username_encrypted TEXT,
                 auth_password_encrypted TEXT,
+                management_provider TEXT NOT NULL DEFAULT 'none',
+                management_target TEXT,
+                management_controller_service_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS service_update_state (
+                service_id INTEGER PRIMARY KEY,
+                provider TEXT NOT NULL DEFAULT 'none',
+                target TEXT,
+                state TEXT NOT NULL DEFAULT 'unknown',
+                current_version TEXT,
+                latest_version TEXT,
+                checked_at TEXT,
+                message TEXT,
+                FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS update_jobs (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                service_id INTEGER,
+                active_service_id INTEGER,
+                provider TEXT,
+                target TEXT,
+                state TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL,
+                current_version TEXT,
+                latest_version TEXT,
+                detail TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
             );
             """
         )
@@ -556,12 +660,34 @@ def init_db() -> None:
         ensure_default_page(connection)
         connection.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme_id', 'system')")
         ensure_category_layouts(connection)
-        connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (iso_now(),))
+        now = iso_now()
+        connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+        connection.execute("UPDATE update_jobs SET state = 'failed', progress = 100, message = 'Interrupted by dashboard restart', finished_at = ? WHERE state IN ('queued', 'running')", (now,))
+
+
+def automatic_update_check_loop() -> None:
+    # Give the application and optional agent time to settle after startup.
+    time.sleep(60)
+    while UPDATE_CHECK_INTERVAL_HOURS > 0:
+        try:
+            with db() as connection:
+                active_job = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued', 'running') LIMIT 1").fetchone()
+                rows = [] if active_job else connection.execute("SELECT * FROM services WHERE management_provider != 'none' ORDER BY name COLLATE NOCASE").fetchall()
+            for row in rows:
+                try:
+                    check_service_update(row)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        time.sleep(max(3600, UPDATE_CHECK_INTERVAL_HOURS * 3600))
 
 
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    if UPDATE_CHECK_INTERVAL_HOURS > 0:
+        threading.Thread(target=automatic_update_check_loop, daemon=True, name="update-check-loop").start()
 
 
 def get_fernet() -> Fernet:
@@ -704,7 +830,11 @@ def row_to_service(row: sqlite3.Row) -> Service:
         auth_username=None,
         auth_password=None,
         clear_auth_credentials=False,
+        management_provider=row["management_provider"] if row["management_provider"] in {"none", "docker_compose", "truenas_app"} else "none",
+        management_target=row["management_target"],
+        management_controller_service_id=row["management_controller_service_id"],
         has_api_key=bool(row["api_key_encrypted"]),
+        has_auth_username=bool(row["auth_username_encrypted"]),
         has_auth_credentials=bool(row["auth_username_encrypted"] and row["auth_password_encrypted"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -766,7 +896,7 @@ def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, 
     request = Request(
         url,
         method=method,
-        headers={"User-Agent": "HomelabDashboard/0.10.0", "Accept": "*/*"},
+        headers={"User-Agent": "HomelabDashboard/0.11.0", "Accept": "*/*"},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     started = time.perf_counter()
@@ -833,7 +963,7 @@ def request_raw(
         url,
         method=method,
         data=data,
-        headers={"User-Agent": "HomelabDashboard/0.10.0", "Accept": "application/json", **(headers or {})},
+        headers={"User-Agent": "HomelabDashboard/0.11.0", "Accept": "application/json", **(headers or {})},
     )
     context = None if verify_tls else ssl._create_unverified_context()
     with urlopen(request, timeout=STATUS_TIMEOUT, context=context) as response:
@@ -1319,12 +1449,52 @@ def immich_insight(service: Service, encrypted_key: str | None) -> ServiceInsigh
         return ServiceInsight(id=service.id, kind="immich", state="unavailable", summary="Immich integration unavailable", secondary=detail[:120], capabilities=capabilities)
 
 
-def truenas_insight(service: Service, encrypted_key: str | None) -> ServiceInsight:
+def truenas_insight(service: Service, encrypted_key: str | None, encrypted_username: str | None = None) -> ServiceInsight:
     capabilities = integration_capabilities("truenas")
     key = decrypt_secret(encrypted_key)
     if not key:
         return setup_api_key_insight(service, "TrueNAS", capabilities)
+    username = decrypt_secret(encrypted_username)
     headers = {"Authorization": f"Bearer {key}"}
+    try:
+        # TrueNAS 25.04+ uses the versioned JSON-RPC WebSocket API. Try it first
+        # so the integration also works on TrueNAS 26+, where the old REST API
+        # has been removed. The REST path below remains as a compatibility fallback.
+        with TrueNASRPC(service, key, username) as client:
+            pools_raw = client.call("pool.query", [[], {}])
+            alerts_ws = None
+            try:
+                alerts_ws = client.call("alert.list", [])
+            except Exception:
+                alerts_ws = None
+        if not isinstance(pools_raw, list):
+            raise ValueError("Unexpected TrueNAS pool response")
+        pools = [pool for pool in pools_raw if isinstance(pool, dict)]
+        total_size = sum(safe_int(pool.get("size")) or 0 for pool in pools)
+        total_allocated = sum(safe_int(pool.get("allocated")) or 0 for pool in pools)
+        unhealthy = [pool for pool in pools if str(pool.get("status") or "").upper() not in {"ONLINE", "HEALTHY"} or pool.get("healthy") is False]
+        activities: list[ServiceActivity] = []
+        for pool in pools:
+            pool_name = str(pool.get("name") or "Pool")
+            scan = pool.get("scan") if isinstance(pool.get("scan"), dict) else None
+            if scan and str(scan.get("state") or "").upper() not in {"FINISHED", "CANCELED", "CANCELLED", "NONE"}:
+                operation = str(scan.get("function") or "scan").lower()
+                activities.append(ServiceActivity(operation=operation, title=f"{pool_name} {operation}", progress=clamp_progress(scan.get("percentage")), transferred_bytes=safe_int(scan.get("bytes_processed")), total_bytes=safe_int(scan.get("bytes_to_process")), eta_seconds=safe_int(scan.get("total_secs_left")), status=str(scan.get("state") or "Running")))
+        alert_count = sum(1 for alert in alerts_ws if isinstance(alert, dict) and not alert.get("dismissed")) if isinstance(alerts_ws, list) else 0
+        summary = "All pools healthy" if not unhealthy else f"{len(unhealthy)} pool{'s' if len(unhealthy) != 1 else ''} need attention"
+        if not pools:
+            summary = "No pools returned"
+        secondary_parts = []
+        if total_size:
+            used_percent = round(total_allocated / total_size * 100)
+            secondary_parts.append(f"{human_bytes(total_allocated)} / {human_bytes(total_size)} used ({used_percent}%)")
+        secondary_parts.append(f"{len(pools)} pool{'s' if len(pools) != 1 else ''}")
+        if alert_count:
+            secondary_parts.append(f"{alert_count} active alert{'s' if alert_count != 1 else ''}")
+        items = [f"{pool.get('name')}: {pool.get('status')}" for pool in unhealthy[:2]]
+        return ServiceInsight(id=service.id, kind="truenas", state="ok", summary=summary, secondary=" · ".join(secondary_parts), items=items, activities=activities[:5], capabilities=capabilities)
+    except Exception:
+        pass
     try:
         pools_raw = service_json(service, "/api/v2.0/pool", headers=headers)
         if not isinstance(pools_raw, list):
@@ -1451,10 +1621,470 @@ def insight_for_row(row: sqlite3.Row) -> ServiceInsight:
     if service.type == "immich":
         return immich_insight(service, row["api_key_encrypted"])
     if service.type == "truenas":
-        return truenas_insight(service, row["api_key_encrypted"])
+        return truenas_insight(service, row["api_key_encrypted"], row["auth_username_encrypted"])
     if service.type in {"dockge", "docker-host"}:
         return docker_host_insight(service.id, service.type)
     return ServiceInsight(id=service.id, kind=service.type, state="none")
+
+
+
+class TrueNASRPC:
+    def __init__(self, service: Service, api_key: str, username: str | None = None):
+        parsed = urlparse(str(service.url))
+        if parsed.scheme.lower() != "https":
+            raise RuntimeError("TrueNAS API-key management requires an HTTPS service URL")
+        if not parsed.hostname:
+            raise RuntimeError("TrueNAS URL has no hostname")
+        self.hostname = parsed.hostname
+        self.ws_url = f"wss://{parsed.netloc}/api/current"
+        sslopt = None
+        if is_private_hostname(parsed.hostname):
+            sslopt = {"cert_reqs": ssl.CERT_NONE, "check_hostname": False}
+        self.ws = create_connection(self.ws_url, timeout=max(STATUS_TIMEOUT, 10), sslopt=sslopt or {})
+        self.sequence = 0
+        try:
+            authenticated = False
+            if username:
+                try:
+                    result = self.call("auth.login_ex", [{"mechanism": "API_KEY_PLAIN", "username": username, "api_key": api_key, "login_options": {"user_info": False}}])
+                    authenticated = isinstance(result, dict) and result.get("response_type") == "SUCCESS"
+                except Exception:
+                    authenticated = False
+            if not authenticated:
+                result = self.call("auth.login_with_api_key", [api_key])
+                authenticated = result is True or (isinstance(result, dict) and result.get("response_type") == "SUCCESS")
+            if not authenticated:
+                raise RuntimeError("TrueNAS API key authentication failed")
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        try:
+            self.ws.close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> "TrueNASRPC":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def call(self, method: str, params: list[object] | None = None) -> object:
+        self.sequence += 1
+        call_id = f"hld-{self.sequence}-{uuid.uuid4().hex[:8]}"
+        self.ws.send(json.dumps({"jsonrpc": "2.0", "id": call_id, "method": method, "params": params or []}))
+        deadline = time.time() + max(STATUS_TIMEOUT, 15)
+        while time.time() < deadline:
+            try:
+                message = json.loads(self.ws.recv())
+            except WebSocketTimeoutException as exc:
+                raise RuntimeError(f"TrueNAS API timed out while calling {method}") from exc
+            if not isinstance(message, dict) or message.get("id") != call_id:
+                continue
+            if "error" in message:
+                error = message.get("error") or {}
+                detail = error.get("message") or (error.get("data") or {}).get("reason") or str(error)
+                raise RuntimeError(f"TrueNAS {method}: {detail}")
+            return message.get("result")
+        raise RuntimeError(f"TrueNAS API timed out while calling {method}")
+
+
+def truenas_client_from_row(row: sqlite3.Row) -> TrueNASRPC:
+    service = row_to_service(row)
+    api_key = decrypt_secret(row["api_key_encrypted"])
+    username = decrypt_secret(row["auth_username_encrypted"])
+    if not api_key:
+        raise RuntimeError("TrueNAS controller does not have an API key saved")
+    return TrueNASRPC(service, api_key, username)
+
+
+def agent_request(path: str, method: str = "GET", payload: dict | None = None, timeout: float = 30) -> object:
+    if not UPDATE_AGENT_URL:
+        raise RuntimeError("Docker update agent is not enabled")
+    headers = {"Accept": "application/json"}
+    if UPDATE_AGENT_TOKEN:
+        headers["X-Agent-Token"] = UPDATE_AGENT_TOKEN
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode("utf-8")
+    request = Request(f"{UPDATE_AGENT_URL}{path}", method=method, headers=headers, data=data)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            detail = body.get("detail") if isinstance(body, dict) else None
+        except Exception:
+            detail = None
+        raise RuntimeError(detail or f"Update agent returned HTTP {exc.code}") from exc
+
+
+def row_to_update_state(row: sqlite3.Row) -> ServiceUpdateState:
+    state = row["state"] if row["state"] in {"unknown", "checking", "current", "available", "unavailable", "unconfigured"} else "unknown"
+    provider = row["provider"] if row["provider"] in {"none", "docker_compose", "truenas_app"} else "none"
+    return ServiceUpdateState(
+        service_id=int(row["service_id"]), provider=provider, target=row["target"], state=state,
+        current_version=row["current_version"], latest_version=row["latest_version"], checked_at=row["checked_at"],
+        message=row["message"], can_update=state == "available",
+    )
+
+
+def row_to_update_job(row: sqlite3.Row) -> UpdateJob:
+    return UpdateJob(
+        id=row["id"], kind=row["kind"], service_id=row["service_id"], active_service_id=row["active_service_id"],
+        provider=row["provider"], target=row["target"], state=row["state"], progress=int(row["progress"] or 0),
+        message=row["message"], current_version=row["current_version"], latest_version=row["latest_version"], detail=row["detail"],
+        created_at=row["created_at"], started_at=row["started_at"], finished_at=row["finished_at"],
+    )
+
+
+def save_update_state(state_obj: ServiceUpdateState) -> None:
+    with db() as connection:
+        connection.execute(
+            """INSERT INTO service_update_state (service_id, provider, target, state, current_version, latest_version, checked_at, message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(service_id) DO UPDATE SET provider=excluded.provider, target=excluded.target, state=excluded.state,
+               current_version=excluded.current_version, latest_version=excluded.latest_version, checked_at=excluded.checked_at, message=excluded.message""",
+            (state_obj.service_id, state_obj.provider, state_obj.target, state_obj.state, state_obj.current_version, state_obj.latest_version, state_obj.checked_at, state_obj.message),
+        )
+
+
+def create_update_job(kind: str, service_id: int | None = None, provider: str | None = None, target: str | None = None, message: str = "Queued") -> UpdateJob:
+    job_id = uuid.uuid4().hex
+    now = iso_now()
+    with db() as connection:
+        connection.execute(
+            "INSERT INTO update_jobs (id, kind, service_id, active_service_id, provider, target, state, progress, message, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)",
+            (job_id, kind, service_id, service_id, provider, target, message, now),
+        )
+        row = connection.execute("SELECT * FROM update_jobs WHERE id = ?", (job_id,)).fetchone()
+    return row_to_update_job(row)
+
+
+def update_job(job_id: str, **changes: object) -> None:
+    if not changes:
+        return
+    allowed = {"active_service_id", "state", "progress", "message", "current_version", "latest_version", "detail", "started_at", "finished_at", "provider", "target"}
+    parts: list[str] = []
+    values: list[object] = []
+    for key, value in changes.items():
+        if key not in allowed:
+            continue
+        parts.append(f"{key} = ?")
+        values.append(value)
+    if not parts:
+        return
+    values.append(job_id)
+    with db() as connection:
+        connection.execute(f"UPDATE update_jobs SET {', '.join(parts)} WHERE id = ?", tuple(values))
+
+
+def get_service_row(service_id: int) -> sqlite3.Row:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM services WHERE id = ?", (service_id,)).fetchone()
+    if not row:
+        raise RuntimeError("Service not found")
+    return row
+
+
+def truenas_app_records(controller_row: sqlite3.Row) -> list[dict]:
+    with truenas_client_from_row(controller_row) as client:
+        raw = client.call("app.query", [[], {}])
+    if not isinstance(raw, list):
+        raise RuntimeError("Unexpected TrueNAS app query response")
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def check_service_update(service_row: sqlite3.Row) -> ServiceUpdateState:
+    service = row_to_service(service_row)
+    provider = service.management_provider
+    target = service.management_target
+    checked_at = iso_now()
+    if provider == "none" or not target:
+        result = ServiceUpdateState(service_id=service.id, provider=provider, target=target, state="unconfigured", checked_at=checked_at, message="Update management is not configured for this service")
+        save_update_state(result)
+        return result
+    try:
+        if provider == "docker_compose":
+            raw = agent_request("/v1/check", method="POST", payload={"resource_id": target}, timeout=UPDATE_JOB_TIMEOUT)
+            if not isinstance(raw, dict):
+                raise RuntimeError("Unexpected update-agent response")
+            available = bool(raw.get("update_available"))
+            result = ServiceUpdateState(
+                service_id=service.id, provider=provider, target=target, state="available" if available else "current",
+                current_version=raw.get("current_version"), latest_version=raw.get("latest_version"), checked_at=checked_at,
+                message="Container image update available" if available else "Container image is current",
+            )
+        elif provider == "truenas_app":
+            controller_id = service.management_controller_service_id
+            if not controller_id:
+                raise RuntimeError("Choose a TrueNAS controller card for this app")
+            controller_row = get_service_row(controller_id)
+            apps = truenas_app_records(controller_row)
+            app_item = next((item for item in apps if str(item.get("id") or item.get("name")) == target), None)
+            if not app_item:
+                raise RuntimeError(f"TrueNAS app {target!r} was not found")
+            available = bool(app_item.get("upgrade_available") or app_item.get("image_updates_available"))
+            current_version = str(app_item.get("human_version") or app_item.get("version") or "") or None
+            latest_version = str(app_item.get("latest_human_version") or app_item.get("latest_version") or "") or None
+            result = ServiceUpdateState(
+                service_id=service.id, provider=provider, target=target, state="available" if available else "current",
+                current_version=current_version, latest_version=latest_version, checked_at=checked_at,
+                message="TrueNAS app update available" if available else "TrueNAS app is current",
+            )
+        else:
+            raise RuntimeError("Unsupported management provider")
+    except Exception as exc:
+        result = ServiceUpdateState(service_id=service.id, provider=provider, target=target, state="unavailable", checked_at=checked_at, message=str(exc)[:240])
+    save_update_state(result)
+    return result
+
+
+def check_updates_worker(job_id: str) -> None:
+    update_job(job_id, state="running", progress=1, message="Checking configured services", started_at=iso_now())
+    try:
+        with db() as connection:
+            rows = connection.execute("SELECT * FROM services WHERE management_provider != 'none' ORDER BY name COLLATE NOCASE").fetchall()
+        if not rows:
+            update_job(job_id, state="success", progress=100, message="No managed services configured", finished_at=iso_now())
+            return
+        for index, row in enumerate(rows, start=1):
+            service = row_to_service(row)
+            update_job(job_id, active_service_id=service.id, progress=max(1, round((index - 1) / len(rows) * 100)), message=f"Checking {service.name}")
+            check_service_update(row)
+        update_job(job_id, active_service_id=None, state="success", progress=100, message="Update check complete", finished_at=iso_now())
+    except Exception as exc:
+        update_job(job_id, state="failed", progress=100, message="Update check failed", detail=str(exc)[:1000], finished_at=iso_now())
+
+
+def perform_docker_update(service: Service, job_id: str, start: int = 5, end: int = 100) -> tuple[str | None, str | None, str]:
+    raw = agent_request("/v1/update", method="POST", payload={"resource_id": service.management_target}, timeout=30)
+    if not isinstance(raw, dict) or not raw.get("id"):
+        raise RuntimeError("Update agent did not return a job id")
+    agent_job_id = str(raw["id"])
+    deadline = time.time() + UPDATE_JOB_TIMEOUT
+    while time.time() < deadline:
+        status_raw = agent_request(f"/v1/jobs/{agent_job_id}", timeout=30)
+        if not isinstance(status_raw, dict):
+            raise RuntimeError("Unexpected update-agent job response")
+        agent_progress = int(status_raw.get("progress") or 0)
+        mapped = start + round((end - start) * agent_progress / 100)
+        update_job(job_id, progress=min(end, mapped), message=str(status_raw.get("stage") or "Updating container"), current_version=status_raw.get("current_version"), latest_version=status_raw.get("latest_version"), detail=status_raw.get("detail"))
+        state = status_raw.get("state")
+        if state == "success":
+            return status_raw.get("current_version"), status_raw.get("latest_version"), "success"
+        if state == "rolled_back":
+            return status_raw.get("current_version"), status_raw.get("latest_version"), "rolled_back"
+        if state == "failed":
+            raise RuntimeError(str(status_raw.get("detail") or "Docker update failed"))
+        time.sleep(1.5)
+    raise RuntimeError("Docker update timed out")
+
+
+def perform_truenas_update(service: Service, job_id: str, start: int = 5, end: int = 100) -> tuple[str | None, str | None, str]:
+    if not service.management_controller_service_id or not service.management_target:
+        raise RuntimeError("TrueNAS update target is incomplete")
+    controller_row = get_service_row(service.management_controller_service_id)
+    update_job(job_id, progress=start, message="Connecting to TrueNAS")
+    with truenas_client_from_row(controller_row) as client:
+        before_raw = client.call("app.query", [[["id", "=", service.management_target]], {"get": True}])
+        before = before_raw if isinstance(before_raw, dict) else {}
+        current_version = str(before.get("human_version") or before.get("version") or "") or None
+        latest_version = str(before.get("latest_human_version") or before.get("latest_version") or "") or None
+        update_job(job_id, progress=start + 10, message="Starting TrueNAS app upgrade", current_version=current_version, latest_version=latest_version)
+        result = client.call("app.upgrade", [service.management_target, {"app_version": "latest", "values": {}, "snapshot_hostpaths": False}])
+        job_number = result if isinstance(result, int) else None
+        deadline = time.time() + UPDATE_JOB_TIMEOUT
+        while time.time() < deadline:
+            percent = None
+            description = "TrueNAS is upgrading the app"
+            state = None
+            error = None
+            if job_number is not None:
+                jobs = client.call("core.get_jobs", [[["id", "=", job_number]], {}])
+                job_info = jobs[0] if isinstance(jobs, list) and jobs and isinstance(jobs[0], dict) else None
+                if job_info:
+                    progress_info = job_info.get("progress") if isinstance(job_info.get("progress"), dict) else {}
+                    percent = progress_info.get("percent")
+                    description = str(progress_info.get("description") or description)
+                    state = str(job_info.get("state") or "")
+                    error = job_info.get("error")
+            app_now_raw = client.call("app.query", [[["id", "=", service.management_target]], {"get": True}])
+            app_now = app_now_raw if isinstance(app_now_raw, dict) else {}
+            if percent is None:
+                percent = 85 if str(app_now.get("state") or "").upper() in {"DEPLOYING", "STOPPING"} else 70
+            mapped = start + round((end - start) * min(100, max(0, float(percent))) / 100)
+            update_job(job_id, progress=min(end - 2, mapped), message=description[:180])
+            if state in {"FAILED", "ABORTED"}:
+                raise RuntimeError(str(error or f"TrueNAS app upgrade {state.lower()}"))
+            if state == "SUCCESS" or (str(app_now.get("state") or "").upper() == "RUNNING" and not bool(app_now.get("upgrade_available") or app_now.get("image_updates_available"))):
+                final_version = str(app_now.get("human_version") or app_now.get("version") or latest_version or "") or latest_version
+                return current_version, final_version, "success"
+            time.sleep(2)
+        raise RuntimeError("TrueNAS app upgrade timed out")
+
+
+def perform_service_update(service_id: int, job_id: str, start: int = 5, end: int = 100) -> str:
+    row = get_service_row(service_id)
+    service = row_to_service(row)
+    if service.management_provider == "none" or not service.management_target:
+        raise RuntimeError("Update management is not configured for this service")
+    update_job(job_id, active_service_id=service.id, provider=service.management_provider, target=service.management_target, progress=start, message=f"Preparing {service.name}")
+    if service.management_provider == "docker_compose":
+        current, latest, outcome = perform_docker_update(service, job_id, start, end)
+    elif service.management_provider == "truenas_app":
+        current, latest, outcome = perform_truenas_update(service, job_id, start, end)
+    else:
+        raise RuntimeError("Unsupported management provider")
+    if outcome == "rolled_back":
+        save_update_state(ServiceUpdateState(service_id=service.id, provider=service.management_provider, target=service.management_target, state="available", current_version=latest or current, latest_version=None, checked_at=iso_now(), message="Update failed and the previous image was restored"))
+        return "rolled_back"
+    state = check_service_update(get_service_row(service.id))
+    update_job(job_id, current_version=current, latest_version=state.current_version or latest)
+    return "success"
+
+
+def service_update_worker(job_id: str, service_id: int) -> None:
+    update_job(job_id, state="running", started_at=iso_now(), progress=1, message="Starting update")
+    try:
+        outcome = perform_service_update(service_id, job_id)
+        if outcome == "rolled_back":
+            update_job(job_id, state="rolled_back", progress=100, message="Update failed; previous container image restored", finished_at=iso_now())
+        else:
+            update_job(job_id, state="success", progress=100, message="Update complete", finished_at=iso_now(), active_service_id=None)
+    except Exception as exc:
+        update_job(job_id, state="failed", progress=100, message="Update failed", detail=str(exc)[:1200], finished_at=iso_now())
+
+
+def batch_update_worker(job_id: str) -> None:
+    update_job(job_id, state="running", started_at=iso_now(), progress=1, message="Preparing update queue")
+    try:
+        with db() as connection:
+            cached = connection.execute("""SELECT s.id, s.name FROM services s JOIN service_update_state u ON u.service_id=s.id
+                                           WHERE u.state='available' AND s.management_provider!='none' ORDER BY s.name COLLATE NOCASE""").fetchall()
+        if not cached:
+            update_job(job_id, state="success", progress=100, message="No available updates", finished_at=iso_now(), active_service_id=None)
+            return
+        total = len(cached)
+        for index, item in enumerate(cached):
+            segment_start = round(index / total * 100)
+            segment_end = round((index + 1) / total * 100)
+            update_job(job_id, active_service_id=int(item["id"]), message=f"Updating {item['name']}", progress=segment_start)
+            outcome = perform_service_update(int(item["id"]), job_id, max(1, segment_start), max(segment_start + 1, segment_end))
+            if outcome == "rolled_back":
+                raise RuntimeError(f"{item['name']} failed its health check and was rolled back; batch stopped")
+        update_job(job_id, active_service_id=None, state="success", progress=100, message="All available updates completed", finished_at=iso_now())
+    except Exception as exc:
+        update_job(job_id, state="failed", progress=100, message="Update-all stopped", detail=str(exc)[:1200], finished_at=iso_now())
+
+
+@app.get("/api/management/docker/resources", response_model=list[ManagedResource])
+def docker_management_resources(_: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
+    try:
+        raw = agent_request("/v1/resources", timeout=30)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    resources = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        resources.append(ManagedResource(id=str(item.get("id")), name=f"{item.get('project')} / {item.get('service')}", provider="docker_compose", detail=str(item.get("image") or "")))
+    return resources
+
+
+@app.get("/api/management/truenas/{controller_service_id}/apps", response_model=list[ManagedResource])
+def truenas_management_apps(controller_service_id: int, _: SessionUser = Depends(require_auth)) -> list[ManagedResource]:
+    try:
+        controller_row = get_service_row(controller_service_id)
+        if controller_row["type"] != "truenas":
+            raise RuntimeError("Selected controller service is not a TrueNAS card")
+        apps = truenas_app_records(controller_row)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return [ManagedResource(
+        id=str(item.get("id") or item.get("name")), name=str(item.get("name") or item.get("id")), provider="truenas_app",
+        current_version=str(item.get("human_version") or item.get("version") or "") or None,
+        latest_version=str(item.get("latest_human_version") or item.get("latest_version") or "") or None,
+        update_available=bool(item.get("upgrade_available") or item.get("image_updates_available")), state=str(item.get("state") or "") or None,
+    ) for item in apps]
+
+
+@app.get("/api/updates/status", response_model=list[ServiceUpdateState])
+def update_statuses(_: SessionUser = Depends(require_auth)) -> list[ServiceUpdateState]:
+    with db() as connection:
+        services = connection.execute("SELECT id, management_provider, management_target FROM services ORDER BY id").fetchall()
+        cached = {row["service_id"]: row for row in connection.execute("SELECT * FROM service_update_state").fetchall()}
+    results: list[ServiceUpdateState] = []
+    for service in services:
+        row = cached.get(service["id"])
+        if row:
+            results.append(row_to_update_state(row))
+        else:
+            provider = service["management_provider"] if service["management_provider"] in {"none", "docker_compose", "truenas_app"} else "none"
+            state: UpdateStateName = "unconfigured" if provider == "none" or not service["management_target"] else "unknown"
+            results.append(ServiceUpdateState(service_id=service["id"], provider=provider, target=service["management_target"], state=state, can_update=False))
+    return results
+
+
+@app.post("/api/updates/check", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
+def start_update_check(_: SessionUser = Depends(require_write_auth)) -> UpdateJob:
+    with db() as connection:
+        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
+    if active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another update job is already running")
+    job = create_update_job("check", message="Update check queued")
+    threading.Thread(target=check_updates_worker, args=(job.id,), daemon=True).start()
+    return job
+
+
+@app.post("/api/services/{service_id}/update", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
+def start_service_update(service_id: int, _: SessionUser = Depends(require_write_auth)) -> UpdateJob:
+    try:
+        row = get_service_row(service_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    service = row_to_service(row)
+    if service.management_provider == "none" or not service.management_target:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update management is not configured for this service")
+    with db() as connection:
+        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
+    if active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another update job is already running")
+    job = create_update_job("update", service_id=service_id, provider=service.management_provider, target=service.management_target, message=f"{service.name} update queued")
+    threading.Thread(target=service_update_worker, args=(job.id, service_id), daemon=True).start()
+    return job
+
+
+@app.post("/api/updates/update-all", response_model=UpdateJob, status_code=status.HTTP_202_ACCEPTED)
+def start_update_all(_: SessionUser = Depends(require_write_auth)) -> UpdateJob:
+    with db() as connection:
+        active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
+    if active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another update job is already running")
+    job = create_update_job("batch", message="Update-all queued")
+    threading.Thread(target=batch_update_worker, args=(job.id,), daemon=True).start()
+    return job
+
+
+@app.get("/api/updates/jobs", response_model=list[UpdateJob])
+def list_update_jobs(limit: int = 25, _: SessionUser = Depends(require_auth)) -> list[UpdateJob]:
+    limit = max(1, min(limit, 100))
+    with db() as connection:
+        rows = connection.execute("SELECT * FROM update_jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    return [row_to_update_job(row) for row in rows]
+
+
+@app.get("/api/updates/jobs/{job_id}", response_model=UpdateJob)
+def get_update_job(job_id: str, _: SessionUser = Depends(require_auth)) -> UpdateJob:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM update_jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Update job not found")
+    return row_to_update_job(row)
 
 
 @app.get("/api/integrations", response_model=list[IntegrationDescriptor])
@@ -1464,7 +2094,7 @@ def integration_descriptors(_: SessionUser = Depends(require_auth)) -> list[Inte
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.10.0", "time": iso_now()}
+    return {"status": "ok", "version": "0.11.0", "time": iso_now()}
 
 
 @app.get("/api/auth/status", response_model=AuthStatus)
@@ -1798,8 +2428,8 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
         ensure_category_layout(connection, service.page_id, service.category)
         cursor = connection.execute(
             """
-            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service.name,
@@ -1816,6 +2446,9 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
                 encrypt_secret(service.api_key),
                 encrypt_secret(service.auth_username),
                 encrypt_secret(service.auth_password),
+                service.management_provider,
+                service.management_target,
+                service.management_controller_service_id,
                 now,
                 now,
             ),
@@ -1828,7 +2461,7 @@ def create_service(service: ServiceCreate, _: SessionUser = Depends(require_writ
 def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Depends(require_write_auth)) -> Service:
     now = iso_now()
     with db() as connection:
-        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted FROM services WHERE id = ?", (service_id,)).fetchone()
+        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id FROM services WHERE id = ?", (service_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
         require_page(connection, service.page_id)
@@ -1857,7 +2490,7 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
         connection.execute(
             """
             UPDATE services
-            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, updated_at = ?
+            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, management_provider = ?, management_target = ?, management_controller_service_id = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -1875,10 +2508,15 @@ def update_service(service_id: int, service: ServiceUpdate, _: SessionUser = Dep
                 api_key_encrypted,
                 auth_username_encrypted,
                 auth_password_encrypted,
+                service.management_provider,
+                service.management_target,
+                service.management_controller_service_id,
                 now,
                 service_id,
             ),
         )
+        if (service.management_provider != current["management_provider"] or service.management_target != current["management_target"] or service.management_controller_service_id != current["management_controller_service_id"]):
+            connection.execute("DELETE FROM service_update_state WHERE service_id = ?", (service_id,))
         row = connection.execute("SELECT * FROM services WHERE id = ?", (service_id,)).fetchone()
     return row_to_service(row)
 

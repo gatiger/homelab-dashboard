@@ -59,6 +59,16 @@ jobs:
         run: docker compose -f compose.yaml config
       - name: Validate optional Docker integration
         run: docker compose -f compose.yaml -f compose.docker.yaml config
+      - name: Validate optional update manager
+        env:
+          UPDATE_AGENT_TOKEN: ci-token
+          UPDATE_AGENT_STACKS_ROOT: /tmp/homelab-stacks
+        run: docker compose -f compose.yaml -f compose.management.yaml config
+      - name: Validate Docker insight + update manager together
+        env:
+          UPDATE_AGENT_TOKEN: ci-token
+          UPDATE_AGENT_STACKS_ROOT: /tmp/homelab-stacks
+        run: docker compose -f compose.yaml -f compose.docker.yaml -f compose.management.yaml config
       - name: Validate local-build override
         run: docker compose -f compose.yaml -f compose.build.yaml config
 
@@ -76,5 +86,14 @@ jobs:
           context: .
           push: false
           tags: homelab-dashboard:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
+      - name: Build restricted update-agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./agent/Dockerfile
+          push: false
+          tags: homelab-dashboard-agent:ci
+          cache-from: type=gha,scope=update-agent
+          cache-to: type=gha,mode=max,scope=update-agent

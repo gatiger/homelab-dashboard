@@ -4,6 +4,26 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.11.0] - 2026-08-22
+
+### Added
+- Update Manager with per-service update availability, one-click updates, sequential Update All, progress, and persistent update history.
+- Management-provider model that separates application integrations from the platform responsible for updating them.
+- Optional restricted Docker Compose/Dockge update-agent sidecar with stack-directory allow-listing and no host-published API port.
+- Docker Compose update discovery, container recreation, health verification, and automatic image rollback when the replacement container fails health checks.
+- TrueNAS App discovery and upgrades through the JSON-RPC WebSocket API, without opening the TrueNAS UI.
+- Automatic update checks every 12 hours by default, plus manual Check for updates.
+- Service editor fields for linking cards to a Docker Compose service or TrueNAS App.
+
+### Changed
+- TrueNAS rich integration now attempts the 25.04+ JSON-RPC WebSocket API first and keeps the legacy REST path only as a compatibility fallback for older installations.
+- TrueNAS API-key owner username can be saved encrypted for current/future `auth.login_ex` compatibility.
+
+### Security
+- The main dashboard container still receives no raw Docker socket. Docker write access lives in the optional update-agent sidecar, which only operates on discovered Compose services whose project files are inside an explicitly configured stacks root.
+- Update actions remain CSRF-protected and require an authenticated dashboard administrator.
+
+
 ## [0.10.0] - 2026-08-22
 
 ### Added

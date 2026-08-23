@@ -2,7 +2,7 @@
 
 Homelab Dashboard cards always work as normal monitored links. The integrations below are optional and add richer read-only information when credentials are configured.
 
-## Supported in v0.10
+## Supported in v0.11
 
 | Service | Authentication used by dashboard | Rich information |
 |---|---|---|
@@ -35,7 +35,7 @@ Compact cards intentionally hide rich insight content to remain compact.
 
 Copy the API key from the application's security/general settings and paste it into the card's Service Configuration dialog. The dashboard sends it only from the backend using the service's API-key header.
 
-The v0.10 adapters target Sonarr/Radarr API v3 and Prowlarr API v1.
+The current adapters target Sonarr/Radarr API v3 and Prowlarr API v1.
 
 ## qBittorrent
 
@@ -51,6 +51,6 @@ Create an Immich API key with sufficient permission to read server information/s
 
 ## TrueNAS compatibility note
 
-v0.10 uses the TrueNAS REST v2 compatibility endpoint for read-only pool/alert information. TrueNAS deprecated the REST API beginning with 25.04 in favor of its WebSocket/API Client architecture, although REST remains available in current releases. Some limited-role API keys may not authenticate through REST even when they work through the newer API client. A future adapter should move the dashboard to the current WebSocket API before TrueNAS removes REST compatibility.
+v0.11 prefers the current versioned JSON-RPC WebSocket API (`/api/current`) for TrueNAS telemetry and management. The older REST v2 path remains only as a read-only telemetry fallback for older installations; it is not used for TrueNAS App upgrades.
 
-Use the least-privileged key that works for the required read-only information. Homelab Dashboard does not issue storage-control commands in v0.10.
+For app management, use an HTTPS TrueNAS card URL plus an API key. Saving the API-key owner username is recommended for current user-linked key authentication and future compatibility. Use a dedicated, least-privileged TrueNAS account/key that has only the roles needed for the telemetry and app-management operations you intend to allow.

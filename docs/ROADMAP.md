@@ -100,8 +100,22 @@
 - Native/OIDC/SSO/reverse-proxy authentication adapter metadata 🚧
 - Installable/community integration adapter runtime 🚧
 
-## Milestone 11 — Advanced dashboard builder
+## Milestone 11 — Update Manager ✅
 
+- Separate application-integration and management-provider concepts ✅
+- Per-service update configuration and discovery ✅
+- One-click background updates from Homelab Dashboard ✅
+- Persistent update status/history and progress UI ✅
+- Sequential Update All with stop-on-failure behavior ✅
+- Docker Compose / Dockge provider through a restricted sidecar ✅
+- Docker image health verification and automatic rollback foundation ✅
+- TrueNAS App provider through the JSON-RPC WebSocket API ✅
+- Automatic/manual update checks ✅
+- Additional providers such as Portainer, Unraid, Synology, and Kubernetes 🚧
+
+## Milestone 12 — Advanced dashboard builder
+
+- Proper Settings area
 - Custom theme editor
 - Desktop and mobile layout refinements
 - Import/export of dashboard structure
@@ -109,7 +123,7 @@
 - Dashboard cloning/templates
 - Optional widgets
 
-## Milestone 12 — Open extension platform
+## Milestone 13 — Open extension platform
 
 - Versioned extension manifest
 - Permission/capability model

@@ -19,7 +19,7 @@
 - **Database:** SQLite in a persistent Docker volume. Appearance selection and imported theme manifests are stored alongside dashboard configuration.
 - **Theme layer:** Frontend components consume validated design tokens. Built-in and imported themes share the same data shape; imported theme packages are non-executable JSON.
 - **Integration adapters:** Service-specific backend functions for supported rich cards; unsupported catalog entries still work as generic monitored links.
-- **Docker access (optional):** The base deployment has no Docker socket access. Users who enable local Docker insight add a restricted socket proxy on an internal network; the dashboard itself never receives the raw Docker socket.
+- **Docker access (optional):** The base deployment has no Docker socket access. Read-only insight uses a restricted socket proxy. One-click Docker Compose updates use a separate update-agent sidecar on a private internal network; only that agent receives the raw socket.
 - **Reverse proxy:** Caddy, Traefik, Nginx, or another user-selected proxy.
 
 ## Service model
@@ -40,6 +40,19 @@ Rich backend adapters normalize service-specific APIs into `ServiceInsight` reco
 
 Credentials remain backend-only. API-key integrations use the existing encrypted key field; username/password integrations such as qBittorrent use separate encrypted credential fields. Empty credential fields during edit preserve existing secrets unless the user explicitly chooses to remove them.
 
+## Management/update model
+
+Application integrations and management providers are intentionally separate. A Sonarr adapter can provide health, queue, and activity while a Docker Compose or TrueNAS provider controls how that Sonarr instance is updated. This avoids service/platform combinations such as separate Sonarr-Docker and Sonarr-TrueNAS adapters.
+
+Each service may optionally store a `management_provider`, provider target, and controller-service reference. v0.11 ships two providers:
+
+- **Docker Compose / Dockge:** the dashboard talks to an optional internal update-agent. The agent discovers Compose project/service labels from Docker, rejects projects outside an allow-listed stacks root, pulls the image, recreates only the selected Compose service, waits for Docker health/running state, and restores the previous image when health verification fails. Stack files are mounted read-only and the agent has no arbitrary shell-command API.
+- **TrueNAS Apps:** the backend talks to the selected TrueNAS card over the versioned JSON-RPC WebSocket API and invokes the TrueNAS app-management methods. TrueNAS remains the system of record for its apps; Homelab Dashboard does not manipulate the underlying app containers directly.
+
+Update state and history are stored in SQLite. Update work runs in background threads so browser/API requests return immediately and the frontend polls job progress. Update All is sequential and stops on failure.
+
+The update-agent is a privileged component because Docker socket access is effectively host-level control. It is optional, isolated from the public network, token-protected, and intentionally narrower than exposing Docker write APIs directly to the main dashboard.
+
 ## Layout model
 
 Dashboard structure is persisted server-side rather than only in browser local storage. `dashboard_pages` stores page/tab names and order. Every service has a `page_id`, while `category_layouts` stores category order and collapsed state separately for each page. Service `sort_order` controls card order within a page/category, `favorite` pins a card ahead of unpinned cards in that category, and `card_size` is one of `compact`, `standard`, or `wide`.
@@ -49,4 +62,4 @@ The browser only keeps the most recently selected page ID as a convenience; the 
 
 ## Distribution model
 
-Stable releases publish a multi-architecture OCI image for `linux/amd64` and `linux/arm64` through GitHub Container Registry. `compose.yaml` is the reference production deployment. `compose.build.yaml` is a source-build override for contributors, and `compose.docker.yaml` adds the optional local-Docker insight layer. Platform-specific UIs such as Dockge, Portainer, TrueNAS Apps, Unraid, Synology Container Manager, and QNAP Container Station are deployment front ends rather than application dependencies.
+Stable releases publish a multi-architecture OCI image for `linux/amd64` and `linux/arm64` through GitHub Container Registry. `compose.yaml` is the reference production deployment. `compose.build.yaml` is a source-build override for contributors, `compose.docker.yaml` adds the optional local-Docker insight layer, and `compose.management.yaml` adds the optional restricted Docker Compose update agent. Platform-specific UIs such as Dockge, Portainer, TrueNAS Apps, Unraid, Synology Container Manager, and QNAP Container Station are deployment front ends rather than application dependencies.

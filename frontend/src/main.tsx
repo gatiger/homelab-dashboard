@@ -4,6 +4,8 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  ArrowUpCircle,
+  History,
   ExternalLink,
   GripVertical,
   LayoutGrid,
@@ -48,7 +50,11 @@ type Service = {
   created_at: string;
   updated_at: string;
   has_api_key: boolean;
+  has_auth_username: boolean;
   has_auth_credentials: boolean;
+  management_provider: "none" | "docker_compose" | "truenas_app";
+  management_target?: string | null;
+  management_controller_service_id?: number | null;
 };
 
 type ServiceForm = {
@@ -68,6 +74,9 @@ type ServiceForm = {
   auth_username: string;
   auth_password: string;
   clear_auth_credentials: boolean;
+  management_provider: "none" | "docker_compose" | "truenas_app";
+  management_target: string;
+  management_controller_service_id: number | null;
 };
 
 type DashboardPage = {
@@ -114,6 +123,47 @@ type ServiceInsight = {
   capabilities: string[];
 };
 
+type ServiceUpdateState = {
+  service_id: number;
+  provider: "none" | "docker_compose" | "truenas_app";
+  target?: string | null;
+  state: "unknown" | "checking" | "current" | "available" | "unavailable" | "unconfigured";
+  current_version?: string | null;
+  latest_version?: string | null;
+  checked_at?: string | null;
+  message?: string | null;
+  can_update: boolean;
+};
+
+type UpdateJob = {
+  id: string;
+  kind: "check" | "update" | "batch";
+  service_id?: number | null;
+  active_service_id?: number | null;
+  provider?: string | null;
+  target?: string | null;
+  state: "queued" | "running" | "success" | "failed" | "rolled_back";
+  progress: number;
+  message: string;
+  current_version?: string | null;
+  latest_version?: string | null;
+  detail?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
+type ManagedResource = {
+  id: string;
+  name: string;
+  provider: "docker_compose" | "truenas_app";
+  current_version?: string | null;
+  latest_version?: string | null;
+  update_available?: boolean | null;
+  state?: string | null;
+  detail?: string | null;
+};
+
 type ServiceStatus = {
   id: number;
   state: "online" | "degraded" | "offline" | "disabled" | "unchecked";
@@ -123,7 +173,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.10.0";
+const APP_VERSION = "0.11.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -142,6 +192,9 @@ const EMPTY_SERVICE: ServiceForm = {
   auth_username: "",
   auth_password: "",
   clear_auth_credentials: false,
+  management_provider: "none",
+  management_target: "",
+  management_controller_service_id: null,
 };
 
 const API_KEY_INTEGRATIONS: Record<string, { label: string; hint: string }> = {
@@ -400,6 +453,7 @@ function ServiceModal({
   csrfToken,
   pages,
   defaultPageId,
+  allServices,
 }: {
   service: Service | null;
   template?: CatalogEntry | null;
@@ -409,6 +463,7 @@ function ServiceModal({
   csrfToken?: string | null;
   pages: DashboardPage[];
   defaultPageId: number;
+  allServices: Service[];
 }) {
   const initialTemplate = template ?? (service ? CATALOG_BY_TYPE[service.type] : null);
   const [form, setForm] = useState<ServiceForm>(service ? {
@@ -428,6 +483,9 @@ function ServiceModal({
     auth_username: "",
     auth_password: "",
     clear_auth_credentials: false,
+    management_provider: service.management_provider ?? "none",
+    management_target: service.management_target ?? "",
+    management_controller_service_id: service.management_controller_service_id ?? null,
   } : initialTemplate ? {
     name: ["link", "other"].includes(initialTemplate.type) ? "" : initialTemplate.name,
     type: initialTemplate.type,
@@ -445,10 +503,40 @@ function ServiceModal({
     auth_username: "",
     auth_password: "",
     clear_auth_credentials: false,
+    management_provider: "none",
+    management_target: "",
+    management_controller_service_id: null,
   } : { ...EMPTY_SERVICE, page_id: defaultPageId });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [managedResources, setManagedResources] = useState<ManagedResource[]>([]);
+  const [resourceLoading, setResourceLoading] = useState(false);
+  const [resourceError, setResourceError] = useState("");
   const selectedCatalogEntry = CATALOG_BY_TYPE[form.type];
+  const trueNasControllers = allServices.filter((item) => item.type === "truenas" && item.id !== service?.id);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadManagedResources() {
+      if (form.management_provider === "none") { setManagedResources([]); setResourceError(""); return; }
+      if (form.management_provider === "truenas_app" && !form.management_controller_service_id) { setManagedResources([]); return; }
+      setResourceLoading(true);
+      setResourceError("");
+      try {
+        const path = form.management_provider === "docker_compose"
+          ? "/api/management/docker/resources"
+          : `/api/management/truenas/${form.management_controller_service_id}/apps`;
+        const resources = await api<ManagedResource[]>(path);
+        if (!cancelled) setManagedResources(resources);
+      } catch (err) {
+        if (!cancelled) { setManagedResources([]); setResourceError(err instanceof Error ? err.message : "Unable to discover managed services."); }
+      } finally {
+        if (!cancelled) setResourceLoading(false);
+      }
+    }
+    void loadManagedResources();
+    return () => { cancelled = true; };
+  }, [form.management_provider, form.management_controller_service_id]);
 
   function setField<K extends keyof ServiceForm>(key: K, value: ServiceForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -572,6 +660,26 @@ function ServiceModal({
               )}
             </>
           )}
+          {form.type === "truenas" && (
+            <>
+              <label className="span-2">
+                <span>TrueNAS API-key username <small>optional on current releases, recommended for future compatibility</small></span>
+                <input
+                  value={form.auth_username}
+                  onChange={(event) => setField("auth_username", event.target.value)}
+                  placeholder={service?.has_auth_username ? "Username saved — leave blank to keep it" : "API key owner username"}
+                  autoComplete="off"
+                />
+                <small>TrueNAS 25.04+ management uses the encrypted JSON-RPC WebSocket API. Use an HTTPS TrueNAS URL.</small>
+              </label>
+              {service?.has_auth_username && (
+                <label className="check-row span-2">
+                  <input type="checkbox" checked={form.clear_auth_credentials} onChange={(event) => setField("clear_auth_credentials", event.target.checked)} />
+                  <span>Remove the saved TrueNAS API username</span>
+                </label>
+              )}
+            </>
+          )}
           {form.type === "qbittorrent" && (
             <>
               <label>
@@ -602,6 +710,46 @@ function ServiceModal({
               )}
             </>
           )}
+          <div className="span-2 management-section">
+            <div className="management-heading">
+              <div><strong>Update management</strong><small> Optional · lets this card update the service without opening its native UI.</small></div>
+            </div>
+            <div className="form-grid management-grid">
+              <label>
+                <span>Managed by</span>
+                <select value={form.management_provider} onChange={(event) => {
+                  const provider = event.target.value as ServiceForm["management_provider"];
+                  setForm((current) => ({ ...current, management_provider: provider, management_target: "", management_controller_service_id: provider === "truenas_app" ? current.management_controller_service_id : null }));
+                }}>
+                  <option value="none">Not managed / detect only</option>
+                  <option value="docker_compose">Docker Compose / Dockge</option>
+                  <option value="truenas_app">TrueNAS App</option>
+                </select>
+              </label>
+              {form.management_provider === "truenas_app" && (
+                <label>
+                  <span>TrueNAS controller</span>
+                  <select value={form.management_controller_service_id ?? ""} onChange={(event) => setForm((current) => ({ ...current, management_controller_service_id: event.target.value ? Number(event.target.value) : null, management_target: "" }))}>
+                    <option value="">Choose a TrueNAS card…</option>
+                    {trueNasControllers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  </select>
+                </label>
+              )}
+              {form.management_provider !== "none" && (
+                <label className={form.management_provider === "docker_compose" ? "span-2" : "span-2"}>
+                  <span>{form.management_provider === "docker_compose" ? "Compose service" : "TrueNAS app"}</span>
+                  <select value={form.management_target} onChange={(event) => setField("management_target", event.target.value)} disabled={resourceLoading || (form.management_provider === "truenas_app" && !form.management_controller_service_id)}>
+                    <option value="">{resourceLoading ? "Discovering…" : "Choose managed service…"}</option>
+                    {managedResources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name}{resource.current_version ? ` · ${resource.current_version}` : ""}</option>)}
+                  </select>
+                  {resourceError && <small className="field-error">{resourceError}</small>}
+                  {!resourceError && form.management_provider === "docker_compose" && <small>Requires the optional restricted update-agent sidecar. Only Compose services inside its allow-listed stacks directory are shown.</small>}
+                  {!resourceError && form.management_provider === "truenas_app" && <small>Homelab Dashboard asks TrueNAS to perform the app upgrade through its own API.</small>}
+                </label>
+              )}
+            </div>
+          </div>
+
           <label>
             <span>Card size</span>
             <select value={form.card_size} onChange={(event) => setField("card_size", event.target.value as ServiceForm["card_size"])}>
@@ -852,6 +1000,83 @@ function inferredServiceType(service: Service): string | null {
   return null;
 }
 
+function UpdateManagerModal({
+  services,
+  states,
+  jobs,
+  busy,
+  onClose,
+  onCheck,
+  onUpdate,
+  onUpdateAll,
+}: {
+  services: Service[];
+  states: Record<number, ServiceUpdateState>;
+  jobs: UpdateJob[];
+  busy: boolean;
+  onClose: () => void;
+  onCheck: () => void;
+  onUpdate: (service: Service) => void;
+  onUpdateAll: () => void;
+}) {
+  const managed = services.filter((service) => service.management_provider !== "none");
+  const available = managed.filter((service) => states[service.id]?.state === "available");
+  const active = jobs.find((job) => job.state === "queued" || job.state === "running");
+  const serviceName = (id?: number | null) => services.find((service) => service.id === id)?.name ?? "Service";
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
+      <section className="modal updates-modal" role="dialog" aria-modal="true" aria-labelledby="updates-title">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">UPDATE MANAGER</p>
+            <h2 id="updates-title">Service updates</h2>
+            <p className="modal-subhead">Check and apply updates through each service's configured management provider.</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={20} /></button>
+        </header>
+        <div className="update-toolbar">
+          <button className="secondary" type="button" disabled={busy || !!active} onClick={onCheck}><RefreshCw className={active?.kind === "check" ? "spin" : ""} size={16} /> Check for updates</button>
+          <button className="primary" type="button" disabled={busy || !!active || available.length === 0} onClick={onUpdateAll}><ArrowUpCircle size={17} /> Update all ({available.length})</button>
+        </div>
+        {active && (
+          <div className="update-active">
+            <div className="activity-heading"><strong>{active.message}</strong><span>{active.progress}%</span></div>
+            <div className="activity-track"><span className="activity-bar" style={{ width: `${active.progress}%` }} /></div>
+            {active.active_service_id && <small>{serviceName(active.active_service_id)}</small>}
+            {active.detail && <small className="field-error">{active.detail}</small>}
+          </div>
+        )}
+        <div className="update-list">
+          {managed.length === 0 && <div className="catalog-empty">No services have update management configured yet. Edit a service card to link it to Docker Compose/Dockge or a TrueNAS App.</div>}
+          {managed.map((service) => {
+            const state = states[service.id];
+            const isActive = active?.active_service_id === service.id || active?.service_id === service.id;
+            return (
+              <div className="update-row" key={service.id}>
+                <div className="update-row-main">
+                  <div className="update-row-title"><ServiceIcon service={service} /><div><strong>{service.name}</strong><small>{service.management_provider === "docker_compose" ? "Docker Compose / Dockge" : "TrueNAS App"}</small></div></div>
+                  <div className={`update-state update-state-${state?.state ?? "unknown"}`}>
+                    {state?.state === "available" ? "Update available" : state?.state === "current" ? "Up to date" : state?.state === "unavailable" ? "Check failed" : state?.state === "unknown" ? "Not checked" : "Not configured"}
+                  </div>
+                  {(state?.current_version || state?.latest_version) && <small className="version-line">{state.current_version ?? "?"}{state.latest_version && state.latest_version !== state.current_version ? ` → ${state.latest_version}` : ""}</small>}
+                  {state?.message && <small>{state.message}</small>}
+                </div>
+                <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? "Updating…" : "Update"}</button>
+              </div>
+            );
+          })}
+        </div>
+        {jobs.length > 0 && (
+          <div className="update-history">
+            <div className="section-title"><History size={16} /><h3>Recent activity</h3></div>
+            {jobs.slice(0, 8).map((job) => <div className="history-row" key={job.id}><span className={`history-dot history-${job.state}`} /> <strong>{job.kind === "update" ? serviceName(job.service_id) : job.kind === "batch" ? "Update all" : "Update check"}</strong><span>{job.message}</span><small>{job.state}</small></div>)}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function ServiceIcon({ service }: { service: Service }) {
   const brandedType = inferredServiceType(service);
   const entry = brandedType ? CATALOG_BY_TYPE[brandedType] : null;
@@ -885,6 +1110,10 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [appearanceBusy, setAppearanceBusy] = useState(false);
   const [appearanceError, setAppearanceError] = useState("");
+  const [updatesOpen, setUpdatesOpen] = useState(false);
+  const [updateStates, setUpdateStates] = useState<Record<number, ServiceUpdateState>>({});
+  const [updateJobs, setUpdateJobs] = useState<UpdateJob[]>([]);
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   async function loadServices() {
     setLoading(true);
@@ -948,15 +1177,64 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     }
   }
 
+  async function loadUpdateData() {
+    try {
+      const [statesResult, jobsResult] = await Promise.all([
+        api<ServiceUpdateState[]>("/api/updates/status"),
+        api<UpdateJob[]>("/api/updates/jobs?limit=25"),
+      ]);
+      setUpdateStates(Object.fromEntries(statesResult.map((item) => [item.service_id, item])));
+      setUpdateJobs(jobsResult);
+    } catch {
+      // Update management is optional.
+    }
+  }
+
+  async function checkForUpdates() {
+    setUpdateBusy(true);
+    try {
+      await api<UpdateJob>("/api/updates/check", { method: "POST" }, auth.csrf_token);
+      await loadUpdateData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start update check.");
+    } finally { setUpdateBusy(false); }
+  }
+
+  async function startManagedUpdate(service: Service) {
+    const state = updateStates[service.id];
+    const versionText = state?.latest_version ? ` to ${state.latest_version}` : "";
+    if (!window.confirm(`Update ${service.name}${versionText}? The service may restart briefly.`)) return;
+    setUpdateBusy(true);
+    try {
+      await api<UpdateJob>(`/api/services/${service.id}/update`, { method: "POST" }, auth.csrf_token);
+      await loadUpdateData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Unable to update ${service.name}.`);
+    } finally { setUpdateBusy(false); }
+  }
+
+  async function updateAllAvailable() {
+    const count = Object.values(updateStates).filter((item) => item.state === "available").length;
+    if (!count || !window.confirm(`Update ${count} available service${count === 1 ? "" : "s"} sequentially? The batch will stop if an update fails.`)) return;
+    setUpdateBusy(true);
+    try {
+      await api<UpdateJob>("/api/updates/update-all", { method: "POST" }, auth.csrf_token);
+      await loadUpdateData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start update-all.");
+    } finally { setUpdateBusy(false); }
+  }
+
   async function refreshTelemetry() {
     await Promise.all([loadStatuses(), loadInsights()]);
   }
 
   useEffect(() => {
-    void Promise.all([loadServices(), loadStructure(), loadAppearance()]);
+    void Promise.all([loadServices(), loadStructure(), loadAppearance(), loadUpdateData()]);
     void refreshTelemetry();
-    const timer = window.setInterval(() => { void refreshTelemetry(); }, 30000);
-    return () => window.clearInterval(timer);
+    const telemetryTimer = window.setInterval(() => { void refreshTelemetry(); }, 30000);
+    const updateTimer = window.setInterval(() => { void loadUpdateData(); }, 2500);
+    return () => { window.clearInterval(telemetryTimer); window.clearInterval(updateTimer); };
   }, []);
 
   useEffect(() => {
@@ -1207,6 +1485,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           <p className="subhead">{activePage ? `${activePage.name} · your services and tools in one place.` : "Your services and tools in one place."}</p>
         </div>
         <div className="hero-actions">
+          <button className="secondary updates-button" type="button" onClick={() => { setUpdatesOpen(true); void loadUpdateData(); }}><ArrowUpCircle size={17} /> Updates{Object.values(updateStates).filter((item) => item.state === "available").length > 0 && <span className="update-badge">{Object.values(updateStates).filter((item) => item.state === "available").length}</span>}</button>
           <button className="secondary" type="button" onClick={() => { setAppearanceError(""); setAppearanceOpen(true); }}><Palette size={17} /> Appearance</button>
           <button className={`secondary ${manageMode ? "active" : ""}`} type="button" onClick={() => setManageMode((value) => !value)}><Settings size={17} /> {manageMode ? "Done" : "Manage"}</button>
           <button className="secondary" type="button" onClick={onLogout}><LogOut size={17} /> Sign out</button>
@@ -1321,6 +1600,8 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                 {categoryServices.map((service) => {
                   const serviceStatus = statusPresentation(service);
                   const insight = insights[service.id];
+                  const updateState = updateStates[service.id];
+                  const updateJob = updateJobs.find((job) => (job.service_id === service.id || job.active_service_id === service.id) && (job.state === "queued" || job.state === "running"));
                   return (
                     <article
                       className={`card card-${service.card_size} ${manageMode ? "managing-card" : ""} ${service.favorite ? "favorite-card" : ""} ${!service.enabled ? "disabled-card" : ""} ${serviceStatus.state === "offline" ? "offline-card" : ""} ${dragOverId === service.id ? "drag-over" : ""}`}
@@ -1360,6 +1641,15 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
                         )}
                         <ExternalLink className="external" size={17} />
                       </a>
+                      {updateJob && (
+                        <div className="card-update-progress">
+                          <div className="activity-heading"><strong>{updateJob.message}</strong><span>{updateJob.progress}%</span></div>
+                          <div className="activity-track"><span className="activity-bar" style={{ width: `${updateJob.progress}%` }} /></div>
+                        </div>
+                      )}
+                      {!updateJob && updateState?.state === "available" && !manageMode && (
+                        <button className="card-update-button" type="button" onClick={() => void startManagedUpdate(service)}><ArrowUpCircle size={15} /> Update{updateState.latest_version ? ` to ${updateState.latest_version}` : " available"}</button>
+                      )}
                       {manageMode && (
                         <div className="card-controls">
                           <span className="drag-handle" title={query.trim() ? "Clear search to reorder" : "Drag to reorder"} aria-hidden="true"><GripVertical size={15} /></span>
@@ -1382,6 +1672,19 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
       <footer className="app-footer">Homelab Dashboard v{APP_VERSION}</footer>
 
+      {updatesOpen && (
+        <UpdateManagerModal
+          services={services}
+          states={updateStates}
+          jobs={updateJobs}
+          busy={updateBusy}
+          onClose={() => setUpdatesOpen(false)}
+          onCheck={() => void checkForUpdates()}
+          onUpdate={(service) => void startManagedUpdate(service)}
+          onUpdateAll={() => void updateAllAvailable()}
+        />
+      )}
+
       {appearanceOpen && (
         <AppearanceModal
           appearance={appearance}
@@ -1403,6 +1706,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           csrfToken={auth.csrf_token}
           pages={pages}
           defaultPageId={activePageId}
+          allServices={services}
           onClose={closeEditor}
           onSaved={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}
           onDeleted={() => { closeEditor(); void loadServices(); void loadStructure(); void refreshTelemetry(); }}

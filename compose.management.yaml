@@ -1,0 +1,39 @@
+# Optional one-click Docker Compose update provider.
+# The update agent is deliberately separate from the dashboard container.
+# It only accepts discovered Compose service identifiers under the allow-listed
+# stacks root; it does not expose an arbitrary command endpoint.
+#
+# Usage:
+#   UPDATE_AGENT_STACKS_ROOT=/absolute/host/path/to/stacks \
+#   UPDATE_AGENT_TOKEN=<long-random-token> \
+#   docker compose -f compose.yaml -f compose.management.yaml up -d
+services:
+  update-agent:
+    image: ${UPDATE_AGENT_IMAGE:-ghcr.io/gatiger/homelab-dashboard-agent}:${DASHBOARD_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      UPDATE_AGENT_TOKEN: ${UPDATE_AGENT_TOKEN:?Set UPDATE_AGENT_TOKEN in .env}
+      UPDATE_AGENT_STACKS_ROOT: ${UPDATE_AGENT_STACKS_ROOT:?Set UPDATE_AGENT_STACKS_ROOT in .env}
+      UPDATE_AGENT_COMMAND_TIMEOUT: ${UPDATE_AGENT_COMMAND_TIMEOUT:-900}
+      UPDATE_AGENT_HEALTH_TIMEOUT: ${UPDATE_AGENT_HEALTH_TIMEOUT:-120}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Stack definitions are read-only. The agent can safely map Dockge's
+      # internal /opt/stacks/<name> Compose labels back to STACKS_ROOT/<name>.
+      - ${UPDATE_AGENT_STACKS_ROOT}:${UPDATE_AGENT_STACKS_ROOT}:ro
+    networks:
+      - update-api
+
+  dashboard:
+    depends_on:
+      - update-agent
+    environment:
+      UPDATE_AGENT_URL: http://update-agent:8765
+      UPDATE_AGENT_TOKEN: ${UPDATE_AGENT_TOKEN}
+    networks:
+      - default
+      - update-api
+
+networks:
+  update-api:
+    internal: true

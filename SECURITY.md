@@ -16,3 +16,10 @@ Imported themes are treated as untrusted data. The supported theme package forma
 ## Integration secrets
 
 Stored service API keys and qBittorrent WebUI credentials are encrypted using the local key in `/app/data/secret.key`. They are not returned through service configuration responses after storage. Back up the SQLite database and `secret.key` together.
+
+
+## Update Manager / Docker agent
+
+v0.11 keeps Docker write privileges out of the main dashboard container. The optional update-agent does mount the Docker socket and should therefore be treated as a privileged host-management component. Its HTTP API is placed only on an internal Compose network, can require a shared token, accepts provider-specific resource identifiers rather than shell commands, and only exposes Compose projects whose working/config paths resolve inside the configured `UPDATE_AGENT_STACKS_ROOT`. Mount that stacks root read-only and never publish the agent port to the LAN or Internet.
+
+TrueNAS updates are sent to TrueNAS itself through its authenticated JSON-RPC WebSocket API. Use HTTPS/WSS and a dedicated user-linked API key with only the roles needed for app discovery/upgrades.

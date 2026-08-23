@@ -25,3 +25,7 @@ docker compose -f compose.yaml up -d --remove-orphans
 ```
 
 Existing Dockge cards continue to show local Docker insight for backward compatibility. v0.7 also adds a dedicated **Docker Host** service template so container statistics are no longer conceptually tied to Dockge.
+
+## Write/update access is separate
+
+v0.11 does not turn the read-only socket proxy into a write proxy. One-click Compose updates use the separate `compose.management.yaml` update-agent architecture documented in [Update Manager](update-manager.md). This keeps normal Docker insight (`POST=0`) independent from lifecycle/update privileges.
