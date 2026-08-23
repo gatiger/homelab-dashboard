@@ -366,6 +366,8 @@ h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1; margin: 0; letter-spacin
 .history-row { display: grid; grid-template-columns: 9px minmax(110px, auto) minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--theme-border-soft); color: var(--theme-muted); font-size: .74rem; }
 .history-row strong { color: var(--theme-text-secondary); }
 .history-row small { color: var(--theme-subtle); text-transform: capitalize; }
+.history-row.has-detail { row-gap: 4px; }
+.history-detail { grid-column: 3 / -1; color: var(--theme-danger, #ef6b73); font-size: .72rem; overflow-wrap: anywhere; }
 .history-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--theme-subtle); }
 .history-success { background: #22c55e; }
 .history-failed { background: #ef4444; }
@@ -382,6 +384,7 @@ h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1; margin: 0; letter-spacin
   .update-row-button { justify-self: start; }
   .history-row { grid-template-columns: 9px 1fr auto; }
   .history-row > span:nth-of-type(2) { grid-column: 2 / -1; }
+  .history-detail { grid-column: 2 / -1; }
 }
 
 

@@ -227,11 +227,14 @@ def test_truenas_host_update_requests_reboot_then_verifies(monkeypatch) -> None:
                 return {"code": "NORMAL", "status": {"new_version": {"version": "25.10.2"}}}
             if method == "system.version_short":
                 return "25.10.1"
-            if method == "update.run":
-                return 77
             if method == "core.get_jobs":
                 return [{"id": 77, "state": "SUCCESS", "progress": {"percent": 100, "description": "Done"}}]
             raise AssertionError(method)
+
+        def start_job(self, method: str, params=None):
+            calls.append((method, params))
+            assert method == "update.run"
+            return 77
 
     class FakeContext:
         def __enter__(self):
@@ -271,3 +274,40 @@ def test_truenas_host_update_requests_reboot_then_verifies(monkeypatch) -> None:
         "reboot": True,
     }]
     assert reconnect == [("job-1", 9, "25.10.2")]
+
+
+def test_truenas_rpc_start_job_captures_job_id_from_event(monkeypatch) -> None:
+    sent: list[dict] = []
+
+    class FakeSocket:
+        def __init__(self):
+            self.messages: list[str] = []
+
+        def send(self, payload: str):
+            message = main.json.loads(payload)
+            sent.append(message)
+            if message["method"] == "core.subscribe":
+                self.messages.append(main.json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": "sub-1"}))
+            elif message["method"] == "update.run":
+                self.messages.append(main.json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "collection_update",
+                    "params": {
+                        "msg": "added",
+                        "collection": "core.get_jobs",
+                        "fields": {"id": 912, "message_ids": [message["id"]]},
+                    },
+                }))
+
+        def recv(self):
+            assert self.messages, "No fake websocket response queued"
+            return self.messages.pop(0)
+
+    rpc = main.TrueNASRPC.__new__(main.TrueNASRPC)
+    rpc.ws = FakeSocket()
+    rpc.sequence = 0
+
+    job_id = rpc.start_job("update.run", [{"version": "25.10.2", "reboot": True}])
+
+    assert job_id == 912
+    assert [message["method"] for message in sent] == ["core.subscribe", "update.run"]

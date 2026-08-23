@@ -4,6 +4,16 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.20.1] - 2026-08-23
+
+### Fixed
+- TrueNAS System host updates now attach to the TrueNAS `core.get_jobs` event stream and capture the middleware job ID instead of waiting for the long-running `update.run` method result to return through the ordinary short RPC timeout.
+- Host-update progress can now be polled reliably from the real TrueNAS job after it starts, allowing the expected update/reboot/reconnect flow to proceed.
+- Update History now displays backend failure details for failed jobs so asynchronous host-update errors are visible instead of appearing to stop silently.
+
+### Changed
+- Added regression coverage for the TrueNAS JSON-RPC job-start event flow documented for job methods.
+
 ## [0.20.0] - 2026-08-23
 
 ### Added

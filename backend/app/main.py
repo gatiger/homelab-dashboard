@@ -48,7 +48,7 @@ EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TI
 EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.20.0"
+APP_VERSION = "0.20.1"
 
 
 @asynccontextmanager
@@ -2733,6 +2733,12 @@ class TrueNASRPC:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    @staticmethod
+    def _error_detail(message: dict, method: str) -> RuntimeError:
+        error = message.get("error") or {}
+        detail = error.get("message") or (error.get("data") or {}).get("reason") or str(error)
+        return RuntimeError(f"TrueNAS {method}: {detail}")
+
     def call(self, method: str, params: list[object] | None = None) -> object:
         self.sequence += 1
         call_id = f"hld-{self.sequence}-{uuid.uuid4().hex[:8]}"
@@ -2746,11 +2752,55 @@ class TrueNASRPC:
             if not isinstance(message, dict) or message.get("id") != call_id:
                 continue
             if "error" in message:
-                error = message.get("error") or {}
-                detail = error.get("message") or (error.get("data") or {}).get("reason") or str(error)
-                raise RuntimeError(f"TrueNAS {method}: {detail}")
+                raise self._error_detail(message, method)
             return message.get("result")
         raise RuntimeError(f"TrueNAS API timed out while calling {method}")
+
+    def start_job(self, method: str, params: list[object] | None = None) -> int:
+        """Start a TrueNAS job method and return its middleware job id.
+
+        TrueNAS JSON-RPC job methods publish the job id through the
+        core.get_jobs collection event. The ordinary JSON-RPC method result is
+        sent only later, so waiting for it would make long-running operations
+        such as update.run hit the normal RPC timeout.
+        """
+        self.call("core.subscribe", ["core.get_jobs"])
+        self.sequence += 1
+        call_id = f"hld-{self.sequence}-{uuid.uuid4().hex[:8]}"
+        self.ws.send(json.dumps({"jsonrpc": "2.0", "id": call_id, "method": method, "params": params or []}))
+        deadline = time.time() + max(STATUS_TIMEOUT, 30)
+        direct_result_received = False
+        while time.time() < deadline:
+            try:
+                message = json.loads(self.ws.recv())
+            except WebSocketTimeoutException as exc:
+                raise RuntimeError(f"TrueNAS API timed out while starting job {method}") from exc
+            if not isinstance(message, dict):
+                continue
+            if message.get("id") == call_id:
+                if "error" in message:
+                    raise self._error_detail(message, method)
+                direct_result_received = True
+                # A fast job can finish before we observe its collection event.
+                # Keep listening briefly for the event so we still capture the id.
+                continue
+            if message.get("method") != "collection_update":
+                continue
+            event = message.get("params")
+            if not isinstance(event, dict) or event.get("collection") != "core.get_jobs":
+                continue
+            fields = event.get("fields")
+            if not isinstance(fields, dict):
+                continue
+            message_ids = fields.get("message_ids")
+            if not isinstance(message_ids, list) or call_id not in message_ids:
+                continue
+            job_id = fields.get("id")
+            if isinstance(job_id, int) and not isinstance(job_id, bool):
+                return job_id
+        if direct_result_received:
+            raise RuntimeError(f"TrueNAS {method} completed but its middleware job id was not reported")
+        raise RuntimeError(f"TrueNAS API timed out while starting job {method}")
 
 
 def truenas_client_from_row(row: sqlite3.Row) -> TrueNASRPC:
@@ -3142,36 +3192,34 @@ def perform_truenas_system_update(service: Service, job_id: str) -> None:
         )
         # TrueNAS update.run is a job method. Reboot is requested as part of the
         # update so the new boot environment is activated immediately.
-        result = client.call("update.run", [{
+        job_number = client.start_job("update.run", [{
             "dataset_name": None,
             "resume": False,
             "train": None,
             "version": latest_version,
             "reboot": True,
         }])
-        job_number = result if isinstance(result, int) and not isinstance(result, bool) else None
-        if job_number is not None:
-            deadline = time.time() + UPDATE_JOB_TIMEOUT
-            while time.time() < deadline:
-                try:
-                    jobs = client.call("core.get_jobs", [[["id", "=", job_number]], {}])
-                except Exception:
-                    # A disconnect after the update job has started is expected once
-                    # the host begins rebooting. Verification continues below.
+        deadline = time.time() + UPDATE_JOB_TIMEOUT
+        while time.time() < deadline:
+            try:
+                jobs = client.call("core.get_jobs", [[["id", "=", job_number]], {}])
+            except Exception:
+                # A disconnect after the update job has started is expected once
+                # the host begins rebooting. Verification continues below.
+                break
+            info = jobs[0] if isinstance(jobs, list) and jobs and isinstance(jobs[0], dict) else None
+            if info:
+                progress_info = info.get("progress") if isinstance(info.get("progress"), dict) else {}
+                percent = float(progress_info.get("percent") or 0)
+                description = str(progress_info.get("description") or "Applying TrueNAS system update")
+                mapped = 10 + round(min(100.0, max(0.0, percent)) * 0.78)
+                update_job(job_id, progress=min(88, mapped), message=description[:180])
+                job_state = str(info.get("state") or "").upper()
+                if job_state in {"FAILED", "ABORTED"}:
+                    raise RuntimeError(str(info.get("error") or f"TrueNAS system update {job_state.lower()}"))
+                if job_state == "SUCCESS":
                     break
-                info = jobs[0] if isinstance(jobs, list) and jobs and isinstance(jobs[0], dict) else None
-                if info:
-                    progress_info = info.get("progress") if isinstance(info.get("progress"), dict) else {}
-                    percent = float(progress_info.get("percent") or 0)
-                    description = str(progress_info.get("description") or "Applying TrueNAS system update")
-                    mapped = 10 + round(min(100.0, max(0.0, percent)) * 0.78)
-                    update_job(job_id, progress=min(88, mapped), message=description[:180])
-                    job_state = str(info.get("state") or "").upper()
-                    if job_state in {"FAILED", "ABORTED"}:
-                        raise RuntimeError(str(info.get("error") or f"TrueNAS system update {job_state.lower()}"))
-                    if job_state == "SUCCESS":
-                        break
-                time.sleep(3)
+            time.sleep(3)
         update_job(
             job_id, state="reconnecting", progress=90, message="Update applied; waiting for TrueNAS to reboot and reconnect",
             current_version=current_version, latest_version=latest_version, detail=None,

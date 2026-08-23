@@ -226,7 +226,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.20.0";
+const APP_VERSION = "0.20.1";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -1413,7 +1413,7 @@ function UpdateManagerModal({
         {jobs.length > 0 && (
           <div className="update-history">
             <div className="section-title"><History size={16} /><h3>Recent activity</h3></div>
-            {jobs.slice(0, 8).map((job) => <div className="history-row" key={job.id}><span className={`history-dot history-${job.state}`} /> <strong>{job.kind === "update" || job.kind === "host_update" ? serviceName(job.service_id) : job.kind === "batch" ? "Update all" : "Update check"}</strong><span>{job.message}</span><small>{job.state === "reconnecting" ? "reconnecting" : job.state}</small></div>)}
+            {jobs.slice(0, 8).map((job) => <div className={`history-row ${job.detail ? "has-detail" : ""}`} key={job.id}><span className={`history-dot history-${job.state}`} /> <strong>{job.kind === "update" || job.kind === "host_update" ? serviceName(job.service_id) : job.kind === "batch" ? "Update all" : "Update check"}</strong><span>{job.message}</span><small>{job.state === "reconnecting" ? "reconnecting" : job.state}</small>{job.detail && <span className="history-detail">{job.detail}</span>}</div>)}
           </div>
         )}
       </section>
