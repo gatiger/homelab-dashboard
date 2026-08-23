@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.20.2
+ghcr.io/gatiger/homelab-dashboard:0.20.3
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -67,6 +67,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Searchable service catalog with common self-hosted applications
 - Recognizable bundled service logos with generic/custom fallbacks
 - Live Online / Degraded / Offline monitoring and response latency
+- Separate optional backend-only monitoring URL so browser access can use a reverse proxy/Tailscale hostname while health checks and integrations use LAN or container DNS
 - Favorites, Compact/Standard/Wide cards, and unified drag-and-drop ordering for service and widget cards
 - Multiple dashboard pages/tabs with persistent page assignment and ordering
 - Persisted category ordering, collapsible sections, category renaming, and customizable category icons
@@ -128,7 +129,7 @@ v0.17 adds an in-app **Extension Registry**. Registry entries carry publisher/tr
 
 The built-in catalog covers media, download clients, files/photos, home automation, monitoring, networking/security, infrastructure, development, productivity, gaming, and generic custom services. Examples include Jellyfin, Plex, Emby, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd, Immich, Nextcloud, Home Assistant, Grafana, Uptime Kuma, Pi-hole, Authentik, Dockge, Portainer, TrueNAS, Unraid, Proxmox VE, Gitea, Vaultwarden, and Pterodactyl.
 
-Catalog port values are hints only; users can enter any URL, reverse proxy, port, or path. Rich integrations are opt-in by adding the credential requested by that service. See [Service integrations](docs/configuration/service-integrations.md).
+Catalog port values are hints only; users can enter any URL, reverse proxy, port, or path. Rich integrations are opt-in by adding the credential requested by that service. If the address users open is not reachable from the Dashboard container, configure an optional **Internal / monitoring URL** or use split DNS / a container hostname override. See [Service integrations](docs/configuration/service-integrations.md) and [Networking and remote access](docs/configuration/networking.md).
 
 ## Persistent data
 

@@ -2,7 +2,7 @@
 
 Homelab Dashboard cards always work as normal monitored links. The integrations below are optional and add richer read-only information when credentials are configured.
 
-## Supported in v0.14
+## Supported rich integrations
 
 | Service | Authentication used by dashboard | Rich information |
 |---|---|---|
@@ -17,6 +17,12 @@ Homelab Dashboard cards always work as normal monitored links. The integrations 
 | Dockge / Docker Host | Optional restricted Docker socket proxy | Stack/container overview |
 
 Stored API keys and qBittorrent credentials are encrypted in `/app/data` and are not returned to the browser after storage. Back up the database and `secret.key` together.
+
+## Service addresses
+
+Every card has a **Browser URL**. v0.20.3 also adds an optional **Internal / monitoring URL**. The backend uses the internal address for Online/Offline checks and rich integrations when it is set; otherwise it falls back to the Browser URL. This is useful when users open a service through a reverse proxy or Tailscale hostname but the Dashboard container can reach the service more reliably over LAN or Docker DNS.
+
+See [Networking and remote access](networking.md) for split-DNS and Docker `extra_hosts` alternatives that can keep a single hostname.
 
 ## Progress behavior
 

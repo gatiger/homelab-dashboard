@@ -4,6 +4,20 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.20.3] - 2026-08-23
+
+### Added
+- Optional per-service **Internal / monitoring URL** that is used only by backend health checks and rich service integrations while the normal Browser URL remains the card's launch target.
+- Monitoring-path regression tests covering persistence, health-check routing, rich-integration routing, and fallback to the Browser URL.
+- Networking guidance for split DNS, Docker `extra_hosts`, Tailscale/private-overlay remote access, and direct LAN/container-DNS monitoring paths.
+
+### Changed
+- Service configuration now labels the normal address as **Browser URL** and explains when an internal monitoring route is useful.
+- Full dashboard layout export/import and page cloning preserve configured internal monitoring URLs. Shareable page-template packs remain environment-neutral and do not export backend-only internal addresses.
+
+### Fixed
+- Services no longer need to appear Offline merely because their user-facing hostname resolves through a remote-access or reverse-proxy path that is unreachable from the Dashboard container.
+
 ## [0.20.2] - 2026-08-23
 
 ### Fixed

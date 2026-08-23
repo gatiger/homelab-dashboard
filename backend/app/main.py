@@ -48,7 +48,7 @@ EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TI
 EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.20.2"
+APP_VERSION = "0.20.3"
 
 
 @asynccontextmanager
@@ -199,6 +199,7 @@ class ServiceBase(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     type: str = Field(default="link", min_length=1, max_length=64)
     url: HttpUrl
+    internal_url: HttpUrl | None = None
     category: str = Field(default="General", min_length=1, max_length=80)
     page_id: int = Field(default=1, ge=1)
     icon: str | None = Field(default=None, max_length=32)
@@ -1273,6 +1274,8 @@ def ensure_service_migrations(connection: sqlite3.Connection) -> None:
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(services)").fetchall()}
     if "status_check" not in columns:
         connection.execute("ALTER TABLE services ADD COLUMN status_check INTEGER NOT NULL DEFAULT 1")
+    if "internal_url" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN internal_url TEXT")
     if "api_key_encrypted" not in columns:
         connection.execute("ALTER TABLE services ADD COLUMN api_key_encrypted TEXT")
     if "favorite" not in columns:
@@ -1565,6 +1568,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 type TEXT NOT NULL DEFAULT 'link',
                 url TEXT NOT NULL,
+                internal_url TEXT,
                 category TEXT NOT NULL DEFAULT 'General',
                 page_id INTEGER NOT NULL DEFAULT 1,
                 icon TEXT,
@@ -1876,6 +1880,7 @@ def row_to_service(row: sqlite3.Row) -> Service:
         name=row["name"],
         type=row["type"],
         url=row["url"],
+        internal_url=row["internal_url"] if "internal_url" in row.keys() and row["internal_url"] else None,
         category=row["category"],
         page_id=int(row["page_id"] or 1),
         icon=row["icon"],
@@ -1954,6 +1959,16 @@ def is_private_hostname(hostname: str | None) -> bool:
         return False
 
 
+def service_backend_url(service: Service) -> str:
+    """Return the backend-only address for health checks and rich integrations.
+
+    The normal service URL remains the browser/navigation target. An optional
+    internal URL lets self-hosters monitor over LAN, Docker DNS, or another
+    private management path without changing the address users open.
+    """
+    return str(service.internal_url or service.url)
+
+
 def perform_probe(url: str, method: str, verify_tls: bool = True) -> tuple[int, int]:
     request = Request(
         url,
@@ -1978,7 +1993,7 @@ def probe_service(service: Service) -> ServiceStatus:
     if not service.status_check:
         return ServiceStatus(id=service.id, state="unchecked", checked_at=checked_at, detail="Status monitoring is off")
 
-    url = str(service.url)
+    url = service_backend_url(service)
     hostname = urlparse(url).hostname
 
     try:
@@ -2054,7 +2069,7 @@ def request_json(url: str, headers: dict[str, str] | None = None, verify_tls: bo
 
 
 def service_json(service: Service, path: str, headers: dict[str, str] | None = None) -> object:
-    base = str(service.url).rstrip("/")
+    base = service_backend_url(service).rstrip("/")
     url = f"{base}/{path.lstrip('/')}"
     body, _ = request_raw_local_retry(url, headers=headers)
     return json.loads(body.decode("utf-8"))
@@ -2367,7 +2382,7 @@ def qbittorrent_insight(service: Service, encrypted_username: str | None, encryp
             secondary="Edit this card to enable queue and transfer activity",
             capabilities=capabilities,
         )
-    base = str(service.url).rstrip("/")
+    base = service_backend_url(service).rstrip("/")
     try:
         login_body = urlencode({"username": username, "password": password}).encode("utf-8")
         login_raw, login_headers = request_raw_local_retry(
@@ -2522,7 +2537,7 @@ def truenas_insight(service: Service, encrypted_key: str | None, encrypted_usern
         # TrueNAS 25.04+ uses the versioned JSON-RPC WebSocket API. Try it first
         # so the integration also works on TrueNAS 26+, where the old REST API
         # has been removed. The REST path below remains as a compatibility fallback.
-        with TrueNASRPC(str(service.url), key, username) as client:
+        with TrueNASRPC(service_backend_url(service), key, username) as client:
             pools_raw = client.call("pool.query", [[], {}])
             alerts_ws = None
             try:
@@ -2809,7 +2824,7 @@ def truenas_client_from_row(row: sqlite3.Row) -> TrueNASRPC:
     username = decrypt_secret(row["auth_username_encrypted"])
     if not api_key:
         raise RuntimeError("TrueNAS controller does not have an API key saved")
-    return TrueNASRPC(str(service.url), api_key, username)
+    return TrueNASRPC(service_backend_url(service), api_key, username)
 
 
 def row_to_management_connection(row: sqlite3.Row, used_by: int = 0) -> ManagementConnection:
@@ -4537,7 +4552,7 @@ def export_dashboard_structure(_: SessionUser = Depends(require_auth)) -> dict[s
             categories = [dict(name=row["name"], sort_order=row["sort_order"], collapsed=bool(row["collapsed"]), icon=row["icon"] if "icon" in row.keys() else None) for row in connection.execute("SELECT * FROM category_layouts WHERE page_id = ? ORDER BY sort_order, name COLLATE NOCASE", (page["id"],)).fetchall()]
             services_out = []
             for row in connection.execute("SELECT * FROM services WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page["id"],)).fetchall():
-                services_out.append({"name": row["name"], "type": row["type"], "url": row["url"], "category": row["category"], "icon": row["icon"], "enabled": bool(row["enabled"]), "status_check": bool(row["status_check"]), "favorite": bool(row["favorite"]), "card_size": row["card_size"], "sort_order": row["sort_order"]})
+                services_out.append({"name": row["name"], "type": row["type"], "url": row["url"], "internal_url": row["internal_url"], "category": row["category"], "icon": row["icon"], "enabled": bool(row["enabled"]), "status_check": bool(row["status_check"]), "favorite": bool(row["favorite"]), "card_size": row["card_size"], "sort_order": row["sort_order"]})
             widgets_out = []
             for row in connection.execute("SELECT * FROM dashboard_widgets WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page["id"],)).fetchall():
                 try: config = json.loads(row["config_json"] or "{}")
@@ -4585,9 +4600,12 @@ def import_dashboard_structure(payload: dict[str, object], _: SessionUser = Depe
                     url_value = str(raw.get("url", "https://")).strip()[:1000]
                     parsed = urlparse(url_value)
                     if parsed.scheme not in {"http", "https"}: continue
+                    internal_url_value = str(raw.get("internal_url") or "").strip()[:1000] or None
+                    if internal_url_value and urlparse(internal_url_value).scheme not in {"http", "https"}:
+                        internal_url_value = None
                     category = str(raw.get("category", "General")).strip()[:80] or "General"
                     ensure_category_layout(connection, page_id, category)
-                    connection.execute("""INSERT INTO services (name,type,url,category,page_id,icon,enabled,status_check,favorite,card_size,sort_order,management_provider,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (name_value, type_value, url_value, category, page_id, (str(raw.get("icon") or "").strip()[:32] or None), int(bool(raw.get("enabled", True))), int(bool(raw.get("status_check", True))), int(bool(raw.get("favorite", False))), raw.get("card_size") if raw.get("card_size") in {"compact","standard","wide"} else "standard", int(raw.get("sort_order") or index), "none", now, now))
+                    connection.execute("""INSERT INTO services (name,type,url,internal_url,category,page_id,icon,enabled,status_check,favorite,card_size,sort_order,management_provider,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (name_value, type_value, url_value, internal_url_value, category, page_id, (str(raw.get("icon") or "").strip()[:32] or None), int(bool(raw.get("enabled", True))), int(bool(raw.get("status_check", True))), int(bool(raw.get("favorite", False))), raw.get("card_size") if raw.get("card_size") in {"compact","standard","wide"} else "standard", int(raw.get("sort_order") or index), "none", now, now))
             raw_widgets = raw_page.get("widgets", [])
             if isinstance(raw_widgets, list):
                 for index, raw in enumerate(raw_widgets[:1000], start=1):
@@ -4660,9 +4678,9 @@ def clone_page(page_id: int, payload: PageCloneRequest, _: SessionUser = Depends
             connection.execute("INSERT INTO category_layouts (page_id, name, sort_order, collapsed, icon) VALUES (?, ?, ?, ?, ?)", (new_page_id, category["name"], category["sort_order"], category["collapsed"], category["icon"] if "icon" in category.keys() else None))
         for service in connection.execute("SELECT * FROM services WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
             connection.execute(
-                """INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (service["name"], service["type"], service["url"], service["category"], new_page_id, service["icon"], service["enabled"], service["status_check"], service["favorite"], service["card_size"], service["sort_order"], service["api_key_encrypted"], service["auth_username_encrypted"], service["auth_password_encrypted"], service["management_provider"], service["management_target"], service["management_controller_service_id"], service["management_connection_id"], now, now),
+                """INSERT INTO services (name, type, url, internal_url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (service["name"], service["type"], service["url"], service["internal_url"], service["category"], new_page_id, service["icon"], service["enabled"], service["status_check"], service["favorite"], service["card_size"], service["sort_order"], service["api_key_encrypted"], service["auth_username_encrypted"], service["auth_password_encrypted"], service["management_provider"], service["management_target"], service["management_controller_service_id"], service["management_connection_id"], now, now),
             )
         for widget in connection.execute("SELECT * FROM dashboard_widgets WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
             connection.execute("""INSERT INTO dashboard_widgets (type, title, page_id, category, card_size, sort_order, enabled, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (widget["type"], widget["title"], new_page_id, widget["category"], widget["card_size"], widget["sort_order"], widget["enabled"], widget["config_json"], now, now))
@@ -4891,13 +4909,14 @@ def create_service(service: ServiceCreate, user: SessionUser = Depends(require_s
         ensure_category_layout(connection, service.page_id, service.category)
         cursor = connection.execute(
             """
-            INSERT INTO services (name, type, url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO services (name, type, url, internal_url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service.name,
                 service.type,
                 str(service.url),
+                str(service.internal_url) if service.internal_url else None,
                 service.category,
                 service.page_id,
                 service.icon,
@@ -4966,13 +4985,14 @@ def update_service(service_id: int, service: ServiceUpdate, user: SessionUser = 
         connection.execute(
             """
             UPDATE services
-            SET name = ?, type = ?, url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, management_provider = ?, management_target = ?, management_controller_service_id = ?, management_connection_id = ?, updated_at = ?
+            SET name = ?, type = ?, url = ?, internal_url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, management_provider = ?, management_target = ?, management_controller_service_id = ?, management_connection_id = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 service.name,
                 service.type,
                 str(service.url),
+                str(service.internal_url) if service.internal_url else None,
                 service.category,
                 service.page_id,
                 service.icon,

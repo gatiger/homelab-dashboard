@@ -239,6 +239,13 @@ Additional management providers are tracked separately below rather than making 
 - Kubernetes/Helm provider
 - Private-registry credential support and richer pinned-tag discovery
 
+## Networking and service-resolution foundation ✅
+
+- Browser URL kept separate from optional backend-only Internal / monitoring URL
+- Health checks and rich integrations use the internal URL when configured and otherwise fall back to the Browser URL
+- Split DNS / local hostname overrides documented as the preferred single-hostname pattern
+- Private-overlay remote access such as Tailscale remains independent from local monitoring paths
+
 ## UX and documentation follow-ups 🚧
 
 - Manage Mode category/card drag auto-scroll near viewport edges

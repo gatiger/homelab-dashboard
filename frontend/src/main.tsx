@@ -47,6 +47,7 @@ type Service = {
   name: string;
   type: string;
   url: string;
+  internal_url?: string | null;
   category: string;
   page_id: number;
   icon?: string | null;
@@ -70,6 +71,7 @@ type ServiceForm = {
   name: string;
   type: string;
   url: string;
+  internal_url: string;
   category: string;
   page_id: number;
   icon: string;
@@ -226,12 +228,13 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.20.2";
+const APP_VERSION = "0.20.3";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
   type: "link",
   url: "https://",
+  internal_url: "",
   category: "General",
   page_id: 1,
   icon: "",
@@ -576,6 +579,7 @@ function ServiceModal({
     name: service.name,
     type: service.type,
     url: service.url,
+    internal_url: service.internal_url ?? "",
     category: service.category,
     page_id: service.page_id,
     icon: service.icon ?? "",
@@ -597,6 +601,7 @@ function ServiceModal({
     name: ["link", "other"].includes(initialTemplate.type) ? "" : initialTemplate.name,
     type: initialTemplate.type,
     url: `${initialTemplate.defaultScheme ?? "http"}://`,
+    internal_url: "",
     category: initialTemplate.category === "Custom" ? "General" : initialTemplate.category,
     page_id: defaultPageId,
     icon: "",
@@ -676,6 +681,7 @@ function ServiceModal({
       const payload = {
         ...form,
         icon: form.icon.trim() || null,
+        internal_url: form.internal_url.trim() || null,
         api_key: form.api_key.trim() || null,
         auth_username: form.auth_username.trim() || null,
         auth_password: form.auth_password || null,
@@ -729,9 +735,14 @@ function ServiceModal({
             </select>
           </label>
           <label className="span-2">
-            <span>URL</span>
+            <span>Browser URL</span>
             <input value={form.url} onChange={(event) => setField("url", event.target.value)} type="url" placeholder={selectedCatalogEntry ? urlPlaceholder(selectedCatalogEntry) : "https://service.example.com"} required />
-            {selectedCatalogEntry?.defaultPort && <small>Common default web port: {selectedCatalogEntry.defaultPort}. Your installation may use a different port.</small>}
+            <small>This is the address opened when someone clicks the card.{selectedCatalogEntry?.defaultPort ? ` Common default web port: ${selectedCatalogEntry.defaultPort}.` : ""}</small>
+          </label>
+          <label className="span-2">
+            <span>Internal / monitoring URL <small>optional</small></span>
+            <input value={form.internal_url} onChange={(event) => setField("internal_url", event.target.value)} type="url" placeholder="http://192.168.1.20:8989" />
+            <small>Used only by the Dashboard backend for health checks and rich integrations. Leave blank to use the Browser URL. Prefer a direct LAN address or Docker DNS name when a public, reverse-proxy, or Tailscale URL is not reachable from the Dashboard container.</small>
           </label>
           <label>
             <span>Dashboard page</span>

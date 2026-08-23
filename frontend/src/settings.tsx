@@ -446,7 +446,7 @@ export function SettingsModal({
               })}</div>
             </div>}
 
-            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.19 adds a capability-based management-provider framework and TrueNAS system update detection while preserving the v0.18 multi-user/RBAC security model.</small></div></div>}
+            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.20.3 adds separate browser and backend monitoring paths while preserving the capability-based update framework, reboot-safe host updates, and multi-user/RBAC security model.</small></div></div>}
           </div>
         </div>
       </section>
