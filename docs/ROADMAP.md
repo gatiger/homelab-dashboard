@@ -209,6 +209,17 @@ Additional management providers are tracked separately below rather than making 
 - Role-aware dashboard controls and read-only Viewer experience
 - Host-side user listing and targeted emergency password reset
 
+## Milestone 19 — Universal update-provider foundation ✅
+
+- Platform-neutral management-provider descriptor registry
+- Provider capability declarations for check/install/progress/rollback/release notes
+- Dynamic service-editor provider discovery and managed-resource selection
+- Common dispatch layer for Docker Compose / Dockge and TrueNAS App update implementations
+- TrueNAS operating-system update detection through the native update API
+- Detection-only provider support without exposing unsafe update actions
+- Server-side capability gates for single-service updates and Update All
+- Reboot-safe host update orchestration/reconnect remains a follow-up before TrueNAS System installation is enabled
+
 ## Management-provider follow-ups 🚧
 
 - Portainer provider

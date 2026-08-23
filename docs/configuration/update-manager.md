@@ -1,16 +1,16 @@
 # Update Manager
 
-Homelab Dashboard v0.14 continues to separate **application integrations** from **management providers**. A service such as Sonarr can use the Sonarr API for health/queue information while Docker Compose, Dockge, or TrueNAS independently controls how that instance is updated.
+Homelab Dashboard separates **application integrations** from **management providers**. A service such as Sonarr can use the Sonarr API for health/queue information while Docker Compose, Dockge, or TrueNAS independently controls how that instance is updated.
 
 ## User experience
 
 1. Edit a service card and choose **Managed by**.
-2. Link it to a discovered Docker Compose service or TrueNAS App.
+2. Link it to a resource exposed by the selected management provider. The provider declares whether it supports detection only or can also install updates.
 3. Open **Updates** and choose **Check for updates** (server-side automatic checks run every 12 hours by default). Open dashboard tabs refresh cached card state automatically without a page reload.
-4. Click **Update** on a card or in the Updates screen. The work runs in the background and progress is shown in Homelab Dashboard.
-5. **Update all** applies currently available updates sequentially and stops if one fails.
+4. When that provider advertises install capability, click **Update** on a card or in the Updates screen. The work runs in the background and progress is shown in Homelab Dashboard.
+5. **Update all** applies only actionable updates sequentially and stops if one fails. Detection-only updates remain visible but are never placed in the update queue.
 
-No native service UI needs to be opened for the update itself.
+No native service UI needs to be opened for providers that support installation.
 
 ## Docker Compose / Dockge provider
 
@@ -71,6 +71,18 @@ Homelab Dashboard does not directly recreate TrueNAS app containers, so TrueNAS 
 
 API keys are password-equivalent credentials. Use a dedicated user-linked key with only the roles required for the operations you want to allow. TrueNAS requires secure HTTPS/WSS transport for user-linked API key authentication.
 
+## TrueNAS System provider
+
+A TrueNAS service card can be set to **Managed by → TrueNAS System** and linked to a reusable TrueNAS Connection. v0.19 uses the native JSON-RPC update-status API to report the installed release and whether a newer system release is available.
+
+TrueNAS System is deliberately **detection-only in v0.19**. The provider advertises check/release-note capability but not update-install capability, so neither the card nor Update All can start a NAS operating-system update. Host updates can reboot the machine that is running Homelab Dashboard itself; installation will be enabled only after the dashboard has reboot-aware reconnect/recovery behavior.
+
+## Provider capability model
+
+Management providers declare their display metadata and capabilities at runtime. The frontend consumes those descriptors instead of maintaining its own fixed list. A provider can declare capabilities such as update checking, installation, progress, rollback, and release notes, along with an optional reusable connection type and the label/shape of its managed target.
+
+This keeps the framework platform-neutral: future Proxmox, Unraid, Portainer, Synology, Kubernetes/Helm, and other adapters can implement only the operations their upstream platform safely exposes. A provider that can detect releases but cannot safely install them can remain detection-only without special-case UI code.
+
 ## Automatic checks
 
 Default:
@@ -87,7 +99,8 @@ Docker checks may download changed image layers even if you do not immediately r
 
 The current release ships:
 
-- Docker Compose / Dockge
-- TrueNAS Apps
+- Docker Compose / Dockge — detect + install + progress + rollback foundation
+- TrueNAS Apps — detect + install + progress
+- TrueNAS System — detect only in v0.19
 
-The provider API is designed for future Portainer, Unraid, Synology, Kubernetes/Helm, and other platform adapters without changing application integrations.
+The capability-based provider API is designed for future Portainer, Unraid, Proxmox, Synology, Kubernetes/Helm, and other platform adapters without changing application integrations.

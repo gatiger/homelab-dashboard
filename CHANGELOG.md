@@ -4,6 +4,26 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.19.0] - 2026-08-23
+
+### Added
+- Platform-neutral management-provider descriptor registry exposed to the frontend at runtime.
+- Capability declarations for update checking, installation, progress, rollback, release notes, connection requirements, and managed-target shape.
+- Generic provider resource-discovery API so the service editor no longer hard-codes Docker and TrueNAS App discovery routes.
+- TrueNAS System provider for native operating-system update detection through the TrueNAS JSON-RPC update API.
+- Backend tests for provider discovery, provider validation, TrueNAS system version parsing, and detection-only capability enforcement.
+
+### Changed
+- Existing Docker Compose / Dockge and TrueNAS App update paths now dispatch through the common provider registry.
+- Service management-provider IDs are open-ended validated identifiers rather than a frontend/backend enum tied to two platforms.
+- The service editor renders provider names, connection requirements, target labels, descriptions, and warnings from provider metadata.
+- Update All includes only available updates whose provider explicitly supports installation; detection-only updates remain visible without becoming actionable.
+- Update buttons are shown only when the provider advertises update-install capability.
+
+### Security
+- Provider capability checks are enforced server-side before single-service or batch updates.
+- TrueNAS System updates are detection-only in v0.19.0. Dashboard can report an available NAS OS update but cannot initiate the host update/reboot until reboot-safe reconnect and recovery handling is implemented.
+
 ## [0.18.0] - 2026-08-23
 
 ### Added

@@ -47,7 +47,7 @@ EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TI
 EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.18.0"
+APP_VERSION = "0.19.0"
 app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION)
 
 # Vite development origin. Production traffic is same-origin through nginx.
@@ -201,10 +201,20 @@ class ServiceBase(BaseModel):
     auth_username: str | None = Field(default=None, max_length=256, exclude=True)
     auth_password: str | None = Field(default=None, max_length=512, exclude=True)
     clear_auth_credentials: bool = Field(default=False, exclude=True)
-    management_provider: Literal["none", "docker_compose", "truenas_app"] = "none"
+    management_provider: str = Field(default="none", min_length=1, max_length=64)
     management_target: str | None = Field(default=None, max_length=300)
     management_controller_service_id: int | None = Field(default=None, ge=1)
     management_connection_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("management_provider")
+    @classmethod
+    def normalize_management_provider(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not value:
+            return "none"
+        if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789._-" for character in value):
+            raise ValueError("Management provider may contain only letters, numbers, dots, underscores, and hyphens")
+        return value
 
     @field_validator("management_target")
     @classmethod
@@ -1071,6 +1081,26 @@ class IntegrationDescriptor(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
 
 
+class ManagementProviderDescriptor(BaseModel):
+    id: str
+    name: str
+    description: str
+    capabilities: list[str] = Field(default_factory=list)
+    connection_type: str | None = None
+    target_label: str = "Managed resource"
+    target_mode: Literal["resource", "system"] = "resource"
+    suggested_service_types: list[str] = Field(default_factory=list)
+    warning: str | None = None
+
+    @property
+    def can_check(self) -> bool:
+        return "check" in self.capabilities
+
+    @property
+    def can_update(self) -> bool:
+        return "update" in self.capabilities
+
+
 UpdateStateName = Literal["unknown", "checking", "current", "available", "unavailable", "unconfigured"]
 UpdateJobState = Literal["queued", "running", "success", "failed", "rolled_back"]
 
@@ -1078,7 +1108,7 @@ UpdateJobState = Literal["queued", "running", "success", "failed", "rolled_back"
 class ManagedResource(BaseModel):
     id: str
     name: str
-    provider: Literal["docker_compose", "truenas_app"]
+    provider: str
     current_version: str | None = None
     latest_version: str | None = None
     update_available: bool | None = None
@@ -1088,7 +1118,7 @@ class ManagedResource(BaseModel):
 
 class ServiceUpdateState(BaseModel):
     service_id: int
-    provider: Literal["none", "docker_compose", "truenas_app"]
+    provider: str
     target: str | None = None
     state: UpdateStateName = "unknown"
     current_version: str | None = None
@@ -1128,6 +1158,54 @@ INTEGRATIONS: dict[str, IntegrationDescriptor] = {
     "dockge": IntegrationDescriptor(type="dockge", name="Dockge", auth="docker_proxy", capabilities=["health", "containers", "stacks"]),
     "docker-host": IntegrationDescriptor(type="docker-host", name="Docker Host", auth="docker_proxy", capabilities=["health", "containers", "stacks"]),
 }
+
+MANAGEMENT_PROVIDERS: dict[str, ManagementProviderDescriptor] = {
+    "docker_compose": ManagementProviderDescriptor(
+        id="docker_compose",
+        name="Docker Compose / Dockge",
+        description="Discover and update allow-listed Docker Compose services through the restricted update-agent sidecar.",
+        capabilities=["check", "update", "rollback", "progress"],
+        target_label="Compose service",
+        target_mode="resource",
+        suggested_service_types=["dockge", "docker-host"],
+    ),
+    "truenas_app": ManagementProviderDescriptor(
+        id="truenas_app",
+        name="TrueNAS App",
+        description="Discover and upgrade applications managed by a reusable TrueNAS connection.",
+        capabilities=["check", "update", "progress"],
+        connection_type="truenas",
+        target_label="TrueNAS app",
+        target_mode="resource",
+    ),
+    "truenas_system": ManagementProviderDescriptor(
+        id="truenas_system",
+        name="TrueNAS System",
+        description="Monitor the TrueNAS operating-system release using the native TrueNAS update API.",
+        capabilities=["check", "release_notes"],
+        connection_type="truenas",
+        target_label="TrueNAS system",
+        target_mode="system",
+        suggested_service_types=["truenas"],
+        warning="System update installation is intentionally detection-only until reboot-safe reconnect and recovery handling is available.",
+    ),
+}
+
+
+def management_provider_descriptor(provider_id: str) -> ManagementProviderDescriptor | None:
+    return MANAGEMENT_PROVIDERS.get(provider_id)
+
+
+def management_provider_can_update(provider_id: str) -> bool:
+    descriptor = management_provider_descriptor(provider_id)
+    return bool(descriptor and descriptor.can_update)
+
+
+def validate_management_provider_id(provider_id: str) -> None:
+    if provider_id == "none":
+        return
+    if provider_id not in MANAGEMENT_PROVIDERS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Unsupported management provider: {provider_id}")
 
 
 class SessionUser(BaseModel):
@@ -1787,7 +1865,7 @@ def row_to_service(row: sqlite3.Row) -> Service:
         auth_username=None,
         auth_password=None,
         clear_auth_credentials=False,
-        management_provider=row["management_provider"] if row["management_provider"] in {"none", "docker_compose", "truenas_app"} else "none",
+        management_provider=(row["management_provider"] or "none"),
         management_target=row["management_target"],
         management_controller_service_id=None if row["management_connection_id"] else row["management_controller_service_id"],
         management_connection_id=row["management_connection_id"],
@@ -2709,11 +2787,11 @@ def agent_request(path: str, method: str = "GET", payload: dict | None = None, t
 
 def row_to_update_state(row: sqlite3.Row) -> ServiceUpdateState:
     state = row["state"] if row["state"] in {"unknown", "checking", "current", "available", "unavailable", "unconfigured"} else "unknown"
-    provider = row["provider"] if row["provider"] in {"none", "docker_compose", "truenas_app"} else "none"
+    provider = row["provider"] or "none"
     return ServiceUpdateState(
         service_id=int(row["service_id"]), provider=provider, target=row["target"], state=state,
         current_version=row["current_version"], latest_version=row["latest_version"], checked_at=row["checked_at"],
-        message=row["message"], can_update=state == "available",
+        message=row["message"], can_update=state == "available" and management_provider_can_update(provider),
     )
 
 
@@ -2789,6 +2867,93 @@ def truenas_app_records(controller_row: sqlite3.Row | None = None, connection_ro
     return [item for item in raw if isinstance(item, dict)]
 
 
+def truenas_client_for_managed_service(service: Service) -> TrueNASRPC:
+    if service.management_connection_id:
+        return truenas_client_from_connection_row(get_management_connection_row(service.management_connection_id))
+    if service.management_controller_service_id:
+        return truenas_client_from_row(get_service_row(service.management_controller_service_id))
+    raise RuntimeError("Choose a TrueNAS connection for this managed resource")
+
+
+def truenas_system_update_status(client: TrueNASRPC) -> tuple[str | None, str | None, bool, str | None]:
+    raw = client.call("update.status")
+    if not isinstance(raw, dict):
+        raise RuntimeError("Unexpected TrueNAS system update response")
+    if str(raw.get("code") or "NORMAL").upper() == "ERROR":
+        error = raw.get("error") if isinstance(raw.get("error"), dict) else {}
+        raise RuntimeError(str(error.get("reason") or error.get("errname") or "TrueNAS update status is unavailable"))
+    status_info = raw.get("status") if isinstance(raw.get("status"), dict) else {}
+    try:
+        version_raw = client.call("system.version_short")
+        current_version = str(version_raw or "").strip() or None
+    except Exception:
+        current_info = status_info.get("current_version") if isinstance(status_info.get("current_version"), dict) else {}
+        current_version = str(current_info.get("version") or current_info.get("name") or "").strip() or None
+    new_version = status_info.get("new_version") if isinstance(status_info.get("new_version"), dict) else None
+    latest_version = (str(new_version.get("version") or "").strip() or None) if new_version else None
+    release_notes_url = (str(new_version.get("release_notes_url") or "").strip() or None) if new_version else None
+    return current_version, latest_version, bool(new_version and latest_version), release_notes_url
+
+
+def check_docker_compose_update(service: Service, checked_at: str) -> ServiceUpdateState:
+    raw = agent_request("/v1/check", method="POST", payload={"resource_id": service.management_target}, timeout=UPDATE_JOB_TIMEOUT)
+    if not isinstance(raw, dict):
+        raise RuntimeError("Unexpected update-agent response")
+    available = bool(raw.get("update_available"))
+    return ServiceUpdateState(
+        service_id=service.id, provider=service.management_provider, target=service.management_target,
+        state="available" if available else "current", current_version=raw.get("current_version"),
+        latest_version=raw.get("latest_version"), checked_at=checked_at,
+        message="Container image update available" if available else "Container image is current",
+        can_update=available,
+    )
+
+
+def check_truenas_app_update(service: Service, checked_at: str) -> ServiceUpdateState:
+    if service.management_connection_id:
+        apps = truenas_app_records(connection_row=get_management_connection_row(service.management_connection_id))
+    elif service.management_controller_service_id:
+        apps = truenas_app_records(controller_row=get_service_row(service.management_controller_service_id))
+    else:
+        raise RuntimeError("Choose a TrueNAS connection for this app")
+    app_item = next((item for item in apps if str(item.get("id") or item.get("name")) == service.management_target), None)
+    if not app_item:
+        raise RuntimeError(f"TrueNAS app {service.management_target!r} was not found")
+    available = bool(app_item.get("upgrade_available") or app_item.get("image_updates_available"))
+    current_version = str(app_item.get("human_version") or app_item.get("version") or "") or None
+    latest_version = str(app_item.get("latest_human_version") or app_item.get("latest_version") or "") or None
+    return ServiceUpdateState(
+        service_id=service.id, provider=service.management_provider, target=service.management_target,
+        state="available" if available else "current", current_version=current_version,
+        latest_version=latest_version, checked_at=checked_at,
+        message="TrueNAS app update available" if available else "TrueNAS app is current",
+        can_update=available,
+    )
+
+
+def check_truenas_system_update(service: Service, checked_at: str) -> ServiceUpdateState:
+    with truenas_client_for_managed_service(service) as client:
+        current_version, latest_version, available, release_notes_url = truenas_system_update_status(client)
+    if available:
+        message = "TrueNAS system update available · detection only in v0.19"
+        if release_notes_url:
+            message += " · release notes available in TrueNAS"
+    else:
+        message = "TrueNAS system is current"
+    return ServiceUpdateState(
+        service_id=service.id, provider=service.management_provider, target=service.management_target,
+        state="available" if available else "current", current_version=current_version,
+        latest_version=latest_version, checked_at=checked_at, message=message, can_update=False,
+    )
+
+
+MANAGEMENT_UPDATE_CHECKERS = {
+    "docker_compose": check_docker_compose_update,
+    "truenas_app": check_truenas_app_update,
+    "truenas_system": check_truenas_system_update,
+}
+
+
 def check_service_update(service_row: sqlite3.Row) -> ServiceUpdateState:
     service = row_to_service(service_row)
     provider = service.management_provider
@@ -2798,42 +2963,20 @@ def check_service_update(service_row: sqlite3.Row) -> ServiceUpdateState:
         result = ServiceUpdateState(service_id=service.id, provider=provider, target=target, state="unconfigured", checked_at=checked_at, message="Update management is not configured for this service")
         save_update_state(result)
         return result
+    descriptor = management_provider_descriptor(provider)
+    if not descriptor:
+        result = ServiceUpdateState(service_id=service.id, provider=provider, target=target, state="unavailable", checked_at=checked_at, message=f"Unsupported management provider: {provider}")
+        save_update_state(result)
+        return result
     save_update_state(ServiceUpdateState(
-        service_id=service.id, provider=provider, target=target, state="checking", checked_at=checked_at, message="Checking for updates"
+        service_id=service.id, provider=provider, target=target, state="checking", checked_at=checked_at, message=f"Checking with {descriptor.name}"
     ))
     try:
-        if provider == "docker_compose":
-            raw = agent_request("/v1/check", method="POST", payload={"resource_id": target}, timeout=UPDATE_JOB_TIMEOUT)
-            if not isinstance(raw, dict):
-                raise RuntimeError("Unexpected update-agent response")
-            available = bool(raw.get("update_available"))
-            result = ServiceUpdateState(
-                service_id=service.id, provider=provider, target=target, state="available" if available else "current",
-                current_version=raw.get("current_version"), latest_version=raw.get("latest_version"), checked_at=checked_at,
-                message="Container image update available" if available else "Container image is current",
-            )
-        elif provider == "truenas_app":
-            if service.management_connection_id:
-                connection_row = get_management_connection_row(service.management_connection_id)
-                apps = truenas_app_records(connection_row=connection_row)
-            elif service.management_controller_service_id:
-                controller_row = get_service_row(service.management_controller_service_id)
-                apps = truenas_app_records(controller_row=controller_row)
-            else:
-                raise RuntimeError("Choose a TrueNAS connection for this app")
-            app_item = next((item for item in apps if str(item.get("id") or item.get("name")) == target), None)
-            if not app_item:
-                raise RuntimeError(f"TrueNAS app {target!r} was not found")
-            available = bool(app_item.get("upgrade_available") or app_item.get("image_updates_available"))
-            current_version = str(app_item.get("human_version") or app_item.get("version") or "") or None
-            latest_version = str(app_item.get("latest_human_version") or app_item.get("latest_version") or "") or None
-            result = ServiceUpdateState(
-                service_id=service.id, provider=provider, target=target, state="available" if available else "current",
-                current_version=current_version, latest_version=latest_version, checked_at=checked_at,
-                message="TrueNAS app update available" if available else "TrueNAS app is current",
-            )
-        else:
-            raise RuntimeError("Unsupported management provider")
+        checker = MANAGEMENT_UPDATE_CHECKERS.get(provider)
+        if not checker:
+            raise RuntimeError(f"{descriptor.name} does not provide update checks")
+        result = checker(service, checked_at)
+        result.can_update = result.state == "available" and descriptor.can_update
     except Exception as exc:
         result = ServiceUpdateState(service_id=service.id, provider=provider, target=target, state="unavailable", checked_at=checked_at, message=str(exc)[:240])
     save_update_state(result)
@@ -2929,18 +3072,27 @@ def perform_truenas_update(service: Service, job_id: str, start: int = 5, end: i
         raise RuntimeError("TrueNAS app upgrade timed out")
 
 
+MANAGEMENT_UPDATE_PERFORMERS = {
+    "docker_compose": perform_docker_update,
+    "truenas_app": perform_truenas_update,
+}
+
+
 def perform_service_update(service_id: int, job_id: str, start: int = 5, end: int = 100) -> str:
     row = get_service_row(service_id)
     service = row_to_service(row)
     if service.management_provider == "none" or not service.management_target:
         raise RuntimeError("Update management is not configured for this service")
+    descriptor = management_provider_descriptor(service.management_provider)
+    if not descriptor:
+        raise RuntimeError(f"Unsupported management provider: {service.management_provider}")
+    if not descriptor.can_update:
+        raise RuntimeError(f"{descriptor.name} supports update detection only in this dashboard version")
+    performer = MANAGEMENT_UPDATE_PERFORMERS.get(service.management_provider)
+    if not performer:
+        raise RuntimeError(f"{descriptor.name} does not provide an update installer")
     update_job(job_id, active_service_id=service.id, provider=service.management_provider, target=service.management_target, progress=start, message=f"Preparing {service.name}")
-    if service.management_provider == "docker_compose":
-        current, latest, outcome = perform_docker_update(service, job_id, start, end)
-    elif service.management_provider == "truenas_app":
-        current, latest, outcome = perform_truenas_update(service, job_id, start, end)
-    else:
-        raise RuntimeError("Unsupported management provider")
+    current, latest, outcome = performer(service, job_id, start, end)
     if outcome == "rolled_back":
         save_update_state(ServiceUpdateState(service_id=service.id, provider=service.management_provider, target=service.management_target, state="available", current_version=latest or current, latest_version=None, checked_at=iso_now(), message="Update failed and the previous image was restored"))
         return "rolled_back"
@@ -2965,8 +3117,9 @@ def batch_update_worker(job_id: str) -> None:
     update_job(job_id, state="running", started_at=iso_now(), progress=1, message="Preparing update queue")
     try:
         with db() as connection:
-            cached = connection.execute("""SELECT s.id, s.name FROM services s JOIN service_update_state u ON u.service_id=s.id
-                                           WHERE u.state='available' AND s.management_provider!='none' ORDER BY s.name COLLATE NOCASE""").fetchall()
+            cached_rows = connection.execute("""SELECT s.id, s.name, s.management_provider FROM services s JOIN service_update_state u ON u.service_id=s.id
+                                                WHERE u.state='available' AND s.management_provider!='none' ORDER BY s.name COLLATE NOCASE""").fetchall()
+        cached = [item for item in cached_rows if management_provider_can_update(item["management_provider"] or "none")]
         if not cached:
             update_job(job_id, state="success", progress=100, message="No available updates", finished_at=iso_now(), active_service_id=None)
             return
@@ -3063,6 +3216,11 @@ def test_management_connection(connection_id: int, _: SessionUser = Depends(requ
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
+@app.get("/api/management/providers", response_model=list[ManagementProviderDescriptor])
+def list_management_providers(_: SessionUser = Depends(require_auth)) -> list[ManagementProviderDescriptor]:
+    return list(MANAGEMENT_PROVIDERS.values())
+
+
 @app.get("/api/management/docker/resources", response_model=list[ManagedResource])
 def docker_management_resources(_: SessionUser = Depends(require_connections_read)) -> list[ManagedResource]:
     try:
@@ -3084,6 +3242,51 @@ def truenas_resources_from_apps(apps: list[dict]) -> list[ManagedResource]:
         latest_version=str(item.get("latest_human_version") or item.get("latest_version") or "") or None,
         update_available=bool(item.get("upgrade_available") or item.get("image_updates_available")), state=str(item.get("state") or "") or None,
     ) for item in apps]
+
+
+@app.get("/api/management/providers/{provider_id}/resources", response_model=list[ManagedResource])
+def management_provider_resources(provider_id: str, connection_id: int | None = None, _: SessionUser = Depends(require_connections_read)) -> list[ManagedResource]:
+    descriptor = management_provider_descriptor(provider_id)
+    if not descriptor:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Management provider not found")
+    try:
+        if provider_id == "docker_compose":
+            raw = agent_request("/v1/resources", timeout=30)
+            resources = raw if isinstance(raw, list) else []
+            return [
+                ManagedResource(
+                    id=str(item.get("id")),
+                    name=f"{item.get('project')} / {item.get('service')}",
+                    provider=provider_id,
+                    detail=str(item.get("image") or ""),
+                )
+                for item in resources if isinstance(item, dict)
+            ]
+        if descriptor.connection_type and not connection_id:
+            raise RuntimeError(f"Choose a {descriptor.connection_type} connection first")
+        if provider_id == "truenas_app":
+            connection_row = get_management_connection_row(int(connection_id))
+            if connection_row["type"] != descriptor.connection_type:
+                raise RuntimeError("The selected connection type does not match this provider")
+            return truenas_resources_from_apps(truenas_app_records(connection_row=connection_row))
+        if provider_id == "truenas_system":
+            connection_row = get_management_connection_row(int(connection_id))
+            if connection_row["type"] != descriptor.connection_type:
+                raise RuntimeError("The selected connection type does not match this provider")
+            with truenas_client_from_connection_row(connection_row) as client:
+                current_version, latest_version, available, release_notes_url = truenas_system_update_status(client)
+            detail = "TrueNAS operating system"
+            if release_notes_url:
+                detail += " · release notes available"
+            return [ManagedResource(
+                id="system", name="TrueNAS System", provider=provider_id, current_version=current_version,
+                latest_version=latest_version, update_available=available, state="available" if available else "current", detail=detail,
+            )]
+        raise RuntimeError(f"{descriptor.name} does not expose resource discovery")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @app.get("/api/management/truenas/connections/{connection_id}/apps", response_model=list[ManagedResource])
@@ -3120,7 +3323,7 @@ def update_statuses(_: SessionUser = Depends(require_auth)) -> list[ServiceUpdat
         if row:
             results.append(row_to_update_state(row))
         else:
-            provider = service["management_provider"] if service["management_provider"] in {"none", "docker_compose", "truenas_app"} else "none"
+            provider = service["management_provider"] or "none"
             state: UpdateStateName = "unconfigured" if provider == "none" or not service["management_target"] else "unknown"
             results.append(ServiceUpdateState(service_id=service["id"], provider=provider, target=service["management_target"], state=state, can_update=False))
     return results
@@ -3146,6 +3349,11 @@ def start_service_update(service_id: int, _: SessionUser = Depends(require_updat
     service = row_to_service(row)
     if service.management_provider == "none" or not service.management_target:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update management is not configured for this service")
+    descriptor = management_provider_descriptor(service.management_provider)
+    if not descriptor:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported management provider: {service.management_provider}")
+    if not descriptor.can_update:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{descriptor.name} supports update detection only in this dashboard version")
     with db() as connection:
         active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()
     if active:
@@ -4405,6 +4613,7 @@ def service_insights(_: SessionUser = Depends(require_auth)) -> list[ServiceInsi
 
 @app.post("/api/services", response_model=Service, status_code=status.HTTP_201_CREATED)
 def create_service(service: ServiceCreate, user: SessionUser = Depends(require_services_manage)) -> Service:
+    validate_management_provider_id(service.management_provider)
     if not user.can("secrets:manage") and (
         service.api_key or service.auth_username or service.auth_password or service.clear_api_key
         or service.clear_auth_credentials or service.management_provider != "none"
@@ -4449,6 +4658,7 @@ def create_service(service: ServiceCreate, user: SessionUser = Depends(require_s
 
 @app.put("/api/services/{service_id}", response_model=Service)
 def update_service(service_id: int, service: ServiceUpdate, user: SessionUser = Depends(require_services_manage)) -> Service:
+    validate_management_provider_id(service.management_provider)
     now = iso_now()
     with db() as connection:
         current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id FROM services WHERE id = ?", (service_id,)).fetchone()

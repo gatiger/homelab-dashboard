@@ -408,7 +408,7 @@ export function SettingsModal({
                 <button className="secondary" type="button" disabled={registryLoading} onClick={() => void onRefreshRegistry().catch(() => undefined)}><RefreshCw size={16} className={registryLoading ? "spin" : ""} /> {registryLoading ? "Checking…" : "Check registry"}</button>
                 <input ref={extensionInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; setError(""); void onImportExtension(file).catch((err) => setError(err instanceof Error ? err.message : "Unable to import extension.")); }} />
               </div>
-              <div className="settings-callout"><strong>Safe extension boundary</strong><span>v0.18 registry packages are still data-only. Registry installs are checksum-verified and permission declarations must match exactly; packages still cannot execute code, access Docker, read credentials, make arbitrary network requests, or access the host filesystem.</span></div>
+              <div className="settings-callout"><strong>Safe extension boundary</strong><span>Registry packages are still data-only. Registry installs are checksum-verified and permission declarations must match exactly; packages still cannot execute code, access Docker, read credentials, make arbitrary network requests, or access the host filesystem.</span></div>
               {error && <div className="notice compact">{error}</div>}
               {registryError && <div className="notice compact">Registry unavailable: {registryError}. Manual JSON import remains available.</div>}
               {registry && <div className="registry-section">
@@ -446,7 +446,7 @@ export function SettingsModal({
               })}</div>
             </div>}
 
-            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.18 adds local multi-user accounts, Owner/Admin/Editor/Viewer roles, permission-aware controls, and session invalidation for disabled or reset accounts.</small></div></div>}
+            {tab === "about" && <div className="settings-panel"><div className="settings-heading"><Info size={19} /><div><h3>About</h3><p>Version and architecture summary.</p></div></div><div className="about-card"><strong>Homelab Dashboard v{appVersion}</strong><span>Self-hosted dashboard, service monitor, update manager, and extensible homelab control center.</span><small>v0.19 adds a capability-based management-provider framework and TrueNAS system update detection while preserving the v0.18 multi-user/RBAC security model.</small></div></div>}
           </div>
         </div>
       </section>

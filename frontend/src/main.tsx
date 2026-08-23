@@ -60,7 +60,7 @@ type Service = {
   has_api_key: boolean;
   has_auth_username: boolean;
   has_auth_credentials: boolean;
-  management_provider: "none" | "docker_compose" | "truenas_app";
+  management_provider: string;
   management_target?: string | null;
   management_controller_service_id?: number | null;
   management_connection_id?: number | null;
@@ -83,7 +83,7 @@ type ServiceForm = {
   auth_username: string;
   auth_password: string;
   clear_auth_credentials: boolean;
-  management_provider: "none" | "docker_compose" | "truenas_app";
+  management_provider: string;
   management_target: string;
   management_controller_service_id: number | null;
   management_connection_id: number | null;
@@ -145,7 +145,7 @@ type ServiceInsight = {
 
 type ServiceUpdateState = {
   service_id: number;
-  provider: "none" | "docker_compose" | "truenas_app";
+  provider: string;
   target?: string | null;
   state: "unknown" | "checking" | "current" | "available" | "unavailable" | "unconfigured";
   current_version?: string | null;
@@ -193,12 +193,24 @@ type ConnectionTestResult = {
 type ManagedResource = {
   id: string;
   name: string;
-  provider: "docker_compose" | "truenas_app";
+  provider: string;
   current_version?: string | null;
   latest_version?: string | null;
   update_available?: boolean | null;
   state?: string | null;
   detail?: string | null;
+};
+
+type ManagementProviderDescriptor = {
+  id: string;
+  name: string;
+  description: string;
+  capabilities: string[];
+  connection_type?: string | null;
+  target_label: string;
+  target_mode: "resource" | "system";
+  suggested_service_types: string[];
+  warning?: string | null;
 };
 
 type ServiceStatus = {
@@ -210,7 +222,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.18.0";
+const APP_VERSION = "0.19.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -536,6 +548,7 @@ function ServiceModal({
   defaultPageId,
   allServices,
   connections,
+  managementProviders,
   catalogEntries,
   canManageSecrets,
 }: {
@@ -549,6 +562,7 @@ function ServiceModal({
   defaultPageId: number;
   allServices: Service[];
   connections: ManagementConnection[];
+  managementProviders: ManagementProviderDescriptor[];
   catalogEntries: CatalogEntry[];
   canManageSecrets: boolean;
 }) {
@@ -603,23 +617,28 @@ function ServiceModal({
   const [resourceLoading, setResourceLoading] = useState(false);
   const [resourceError, setResourceError] = useState("");
   const selectedCatalogEntry = catalogByType[form.type];
+  const selectedManagementProvider = managementProviders.find((provider) => provider.id === form.management_provider);
   // allServices is retained for compatibility with existing editor behavior; management controllers now use Connections.
   void allServices;
 
   useEffect(() => {
     let cancelled = false;
     async function loadManagedResources() {
-      if (!canManageSecrets) { setManagedResources([]); setResourceError(""); return; }
-      if (form.management_provider === "none") { setManagedResources([]); setResourceError(""); return; }
-      if (form.management_provider === "truenas_app" && !form.management_connection_id) { setManagedResources([]); setResourceError(""); return; }
+      if (!canManageSecrets || form.management_provider === "none") { setManagedResources([]); setResourceError(""); return; }
+      const descriptor = managementProviders.find((provider) => provider.id === form.management_provider);
+      if (!descriptor) { setManagedResources([]); setResourceError("This management provider is unavailable."); return; }
+      if (descriptor.connection_type && !form.management_connection_id) { setManagedResources([]); setResourceError(""); return; }
       setResourceLoading(true);
       setResourceError("");
       try {
-        const path = form.management_provider === "docker_compose"
-          ? "/api/management/docker/resources"
-          : `/api/management/truenas/connections/${form.management_connection_id}/apps`;
-        const resources = await api<ManagedResource[]>(path);
-        if (!cancelled) setManagedResources(resources);
+        const params = descriptor.connection_type && form.management_connection_id ? `?connection_id=${form.management_connection_id}` : "";
+        const resources = await api<ManagedResource[]>(`/api/management/providers/${encodeURIComponent(form.management_provider)}/resources${params}`);
+        if (!cancelled) {
+          setManagedResources(resources);
+          if (descriptor.target_mode === "system" && resources.length === 1) {
+            setForm((current) => current.management_provider === descriptor.id && !current.management_target ? { ...current, management_target: resources[0].id } : current);
+          }
+        }
       } catch (err) {
         if (!cancelled) { setManagedResources([]); setResourceError(err instanceof Error ? err.message : "Unable to discover managed services."); }
       } finally {
@@ -628,7 +647,7 @@ function ServiceModal({
     }
     void loadManagedResources();
     return () => { cancelled = true; };
-  }, [form.management_provider, form.management_connection_id, canManageSecrets]);
+  }, [form.management_provider, form.management_connection_id, canManageSecrets, managementProviders]);
 
   function setField<K extends keyof ServiceForm>(key: K, value: ServiceForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -810,40 +829,40 @@ function ServiceModal({
               <label>
                 <span>Managed by</span>
                 <select value={form.management_provider} onChange={(event) => {
-                  const provider = event.target.value as ServiceForm["management_provider"];
+                  const provider = event.target.value;
+                  const nextDescriptor = managementProviders.find((item) => item.id === provider);
                   setForm((current) => ({
                     ...current,
                     management_provider: provider,
                     management_target: "",
                     management_controller_service_id: null,
-                    management_connection_id: provider === "truenas_app" ? current.management_connection_id : null,
+                    management_connection_id: nextDescriptor?.connection_type ? current.management_connection_id : null,
                   }));
                 }}>
-                  <option value="none">Not managed / detect only</option>
-                  <option value="docker_compose">Docker Compose / Dockge</option>
-                  <option value="truenas_app">TrueNAS App</option>
+                  <option value="none">Not managed</option>
+                  {managementProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                 </select>
+                {selectedManagementProvider && <small>{selectedManagementProvider.description}</small>}
               </label>
-              {form.management_provider === "truenas_app" && (
+              {selectedManagementProvider?.connection_type && (
                 <label>
-                  <span>TrueNAS connection</span>
+                  <span>{selectedManagementProvider.connection_type === "truenas" ? "TrueNAS" : selectedManagementProvider.connection_type} connection</span>
                   <select value={form.management_connection_id ?? ""} onChange={(event) => setForm((current) => ({ ...current, management_connection_id: event.target.value ? Number(event.target.value) : null, management_controller_service_id: null, management_target: "" }))}>
-                    <option value="">Choose a TrueNAS connection…</option>
-                    {connections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    <option value="">Choose a connection…</option>
+                    {connections.filter((item) => item.type === selectedManagementProvider.connection_type).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                   </select>
-                  {connections.length === 0 && <small className="field-error">Add a TrueNAS connection from Connections first.</small>}
+                  {connections.filter((item) => item.type === selectedManagementProvider.connection_type).length === 0 && <small className="field-error">Add a compatible connection from Connections first.</small>}
                 </label>
               )}
-              {form.management_provider !== "none" && (
-                <label className={form.management_provider === "docker_compose" ? "span-2" : "span-2"}>
-                  <span>{form.management_provider === "docker_compose" ? "Compose service" : "TrueNAS app"}</span>
-                  <select value={form.management_target} onChange={(event) => setField("management_target", event.target.value)} disabled={resourceLoading || (form.management_provider === "truenas_app" && !form.management_connection_id)}>
-                    <option value="">{resourceLoading ? "Discovering…" : "Choose managed service…"}</option>
+              {form.management_provider !== "none" && selectedManagementProvider && (
+                <label className="span-2">
+                  <span>{selectedManagementProvider.target_label}</span>
+                  <select value={form.management_target} onChange={(event) => setField("management_target", event.target.value)} disabled={resourceLoading || (!!selectedManagementProvider.connection_type && !form.management_connection_id)}>
+                    <option value="">{resourceLoading ? "Discovering…" : `Choose ${selectedManagementProvider.target_label.toLowerCase()}…`}</option>
                     {managedResources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name}{resource.current_version ? ` · ${resource.current_version}` : ""}</option>)}
                   </select>
                   {resourceError && <small className="field-error">{resourceError}</small>}
-                  {!resourceError && form.management_provider === "docker_compose" && <small>Requires the optional restricted update-agent sidecar. Only Compose services inside its allow-listed stacks directory are shown.</small>}
-                  {!resourceError && form.management_provider === "truenas_app" && <small>Homelab Dashboard asks TrueNAS to perform the app upgrade through its own API.</small>}
+                  {!resourceError && selectedManagementProvider.warning && <small className="field-error">{selectedManagementProvider.warning}</small>}
                 </label>
               )}
             </div>
@@ -1312,6 +1331,7 @@ function UpdateManagerModal({
   jobs,
   busy,
   catalogEntries,
+  managementProviders,
   canRunUpdates,
   onClose,
   onCheck,
@@ -1323,6 +1343,7 @@ function UpdateManagerModal({
   jobs: UpdateJob[];
   busy: boolean;
   catalogEntries: CatalogEntry[];
+  managementProviders: ManagementProviderDescriptor[];
   canRunUpdates: boolean;
   onClose: () => void;
   onCheck: () => void;
@@ -1330,9 +1351,10 @@ function UpdateManagerModal({
   onUpdateAll: () => void;
 }) {
   const managed = services.filter((service) => service.management_provider !== "none");
-  const available = managed.filter((service) => states[service.id]?.state === "available");
+  const available = managed.filter((service) => states[service.id]?.state === "available" && states[service.id]?.can_update);
   const active = jobs.find((job) => job.state === "queued" || job.state === "running");
   const serviceName = (id?: number | null) => services.find((service) => service.id === id)?.name ?? "Service";
+  const providerName = (id: string) => managementProviders.find((provider) => provider.id === id)?.name ?? id;
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
       <section className="modal updates-modal" role="dialog" aria-modal="true" aria-labelledby="updates-title">
@@ -1359,21 +1381,21 @@ function UpdateManagerModal({
           </div>
         )}
         <div className="update-list">
-          {managed.length === 0 && <div className="catalog-empty">No services have update management configured yet. Edit a service card to link it to Docker Compose/Dockge or a TrueNAS App.</div>}
+          {managed.length === 0 && <div className="catalog-empty">No services have update management configured yet. Edit a service card to choose any available management provider.</div>}
           {managed.map((service) => {
             const state = states[service.id];
             const isActive = active?.active_service_id === service.id || active?.service_id === service.id;
             return (
               <div className="update-row" key={service.id}>
                 <div className="update-row-main">
-                  <div className="update-row-title"><ServiceIcon service={service} catalogEntries={catalogEntries} /><div><strong>{service.name}</strong><small>{service.management_provider === "docker_compose" ? "Docker Compose / Dockge" : "TrueNAS App"}</small></div></div>
+                  <div className="update-row-title"><ServiceIcon service={service} catalogEntries={catalogEntries} /><div><strong>{service.name}</strong><small>{providerName(service.management_provider)}</small></div></div>
                   <div className={`update-state update-state-${state?.state ?? "unknown"}`}>
                     {state?.state === "available" ? "Update available" : state?.state === "current" ? "Up to date" : state?.state === "checking" ? "Checking…" : state?.state === "unavailable" ? "Check failed" : state?.state === "unknown" ? "Not checked" : "Not configured"}
                   </div>
                   {(state?.current_version || state?.latest_version) && <small className="version-line">{state.current_version ?? "?"}{state.latest_version && state.latest_version !== state.current_version ? ` → ${state.latest_version}` : ""}</small>}
                   {state?.message && <small>{state.message}</small>}
                 </div>
-                {canRunUpdates && <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? "Updating…" : "Update"}</button>}
+                {canRunUpdates && state?.can_update && <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? "Updating…" : "Update"}</button>}
               </div>
             );
           })}
@@ -1409,7 +1431,7 @@ function CardManagementStatus({ service, state, job, manageMode, canUpdate, onUp
   return (
     <div className={`card-management-slot management-${current}`} title={state?.message ?? label}>
       <div className={`management-status-line management-${current}`}><span className="management-status-dot" /><strong>{label}</strong>{version && <small className="management-version">{version}</small>}</div>
-      {current === "available" && !manageMode && canUpdate && <button className="card-update-action" type="button" onClick={() => onUpdate(service)}><ArrowUpCircle size={14} /> Update</button>}
+      {current === "available" && state?.can_update && !manageMode && canUpdate && <button className="card-update-action" type="button" onClick={() => onUpdate(service)}><ArrowUpCircle size={14} /> Update</button>}
     </div>
   );
 }
@@ -1450,6 +1472,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [appearanceBusy, setAppearanceBusy] = useState(false);
   const [appearanceError, setAppearanceError] = useState("");
   const [connections, setConnections] = useState<ManagementConnection[]>([]);
+  const [managementProviders, setManagementProviders] = useState<ManagementProviderDescriptor[]>([]);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
@@ -1654,6 +1677,11 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     catch { /* Management connections are optional. */ }
   }
 
+  async function loadManagementProviders() {
+    try { setManagementProviders(await api<ManagementProviderDescriptor[]>("/api/management/providers")); }
+    catch { /* Update providers are optional; existing dashboard features should still load. */ }
+  }
+
   async function loadUpdateData() {
     try {
       const [statesResult, jobsResult] = await Promise.all([
@@ -1679,6 +1707,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
   async function startManagedUpdate(service: Service) {
     const state = updateStates[service.id];
+    if (!state?.can_update) { setError("This management provider supports update detection only."); return; }
     const versionText = state?.latest_version ? ` to ${state.latest_version}` : "";
     if (!window.confirm(`Update ${service.name}${versionText}? The service may restart briefly.`)) return;
     setUpdateBusy(true);
@@ -1691,7 +1720,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   }
 
   async function updateAllAvailable() {
-    const count = Object.values(updateStates).filter((item) => item.state === "available").length;
+    const count = Object.values(updateStates).filter((item) => item.state === "available" && item.can_update).length;
     if (!count || !window.confirm(`Update ${count} available service${count === 1 ? "" : "s"} sequentially? The batch will stop if an update fails.`)) return;
     setUpdateBusy(true);
     try {
@@ -1708,7 +1737,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
 
   useEffect(() => {
     void Promise.all([
-      loadServices(), loadWidgets(), loadStructure(), loadAppearance(), loadConnections(), loadUpdateData(), loadSettings(), loadExtensions(), loadAccount(),
+      loadServices(), loadWidgets(), loadStructure(), loadAppearance(), loadConnections(), loadManagementProviders(), loadUpdateData(), loadSettings(), loadExtensions(), loadAccount(),
       canManageUsers ? loadUsers() : Promise.resolve(),
     ]);
     void refreshTelemetry();
@@ -1986,7 +2015,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     if (manifest.format !== "homelab-dashboard-extension") throw new Error("This is not a Homelab Dashboard extension package.");
     const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.map(String) : [];
     const capabilities = Array.isArray(manifest.capabilities) ? manifest.capabilities.map(String) : [];
-    const summary = [`Install ${String(manifest.name ?? file.name)}?`, "", `Capabilities: ${capabilities.join(", ") || "none"}`, `Permissions: ${permissions.join(", ") || "none"}`, "", "v0.18 still accepts data-only extension packages only; executable plugin code is not supported."] .join("\n");
+    const summary = [`Install ${String(manifest.name ?? file.name)}?`, "", `Capabilities: ${capabilities.join(", ") || "none"}`, `Permissions: ${permissions.join(", ") || "none"}`, "", "This release still accepts data-only extension packages only; executable plugin code is not supported."] .join("\n");
     if (!window.confirm(summary)) return;
     await api<ExtensionDescriptor>("/api/extensions/import", { method: "POST", body: JSON.stringify(manifest) }, auth.csrf_token);
     await Promise.all([loadExtensions(), loadExtensionRegistry(false)]);
@@ -2329,6 +2358,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           jobs={updateJobs}
           busy={updateBusy}
           catalogEntries={catalogEntries}
+          managementProviders={managementProviders}
           canRunUpdates={canRunUpdates}
           onClose={() => setUpdatesOpen(false)}
           onCheck={() => void checkForUpdates()}
@@ -2368,6 +2398,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           defaultPageId={activePageId}
           allServices={services}
           connections={connections}
+          managementProviders={managementProviders}
           catalogEntries={catalogEntries}
           canManageSecrets={canManageSecrets}
           onClose={closeEditor}

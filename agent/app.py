@@ -18,7 +18,7 @@ STACKS_ROOT = Path(STACKS_ROOT_RAW).resolve() if STACKS_ROOT_RAW else None
 COMMAND_TIMEOUT = max(30, min(int(os.getenv("UPDATE_AGENT_COMMAND_TIMEOUT", "900")), 3600))
 HEALTH_TIMEOUT = max(15, min(int(os.getenv("UPDATE_AGENT_HEALTH_TIMEOUT", "120")), 900))
 
-app = FastAPI(title="Homelab Dashboard Update Agent", version="0.18.0")
+app = FastAPI(title="Homelab Dashboard Update Agent", version="0.19.0")
 
 
 class Resource(BaseModel):

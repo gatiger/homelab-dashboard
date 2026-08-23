@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.18.0
+ghcr.io/gatiger/homelab-dashboard:0.19.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -81,7 +81,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Safe importable JSON theme extensions with no executable code
 - Open-ended service identifiers for future templates/plugins
 - Shared integration capability/activity model for progress-aware service cards
-- Update Manager with one-click Docker Compose/Dockge and TrueNAS App updates
+- Capability-based Update Manager with one-click Docker Compose/Dockge and TrueNAS App updates plus detection-only TrueNAS system updates
 - Reusable management Connections so platform credentials do not require visible controller cards
 - Standardized managed-card update indicators with glowing current/available/error states
 - Automatic in-browser telemetry/update-state refresh without manually reloading the page
@@ -100,9 +100,9 @@ See [Docker integration](docs/configuration/docker-integration.md).
 
 ## Update Manager
 
-The **Updates** screen can discover and apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers (for example Docker Compose or TrueNAS Apps), so the same service can be monitored one way and updated another.
+The **Updates** screen can discover and, where the provider safely supports it, apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers, so the same service can be monitored one way and updated another. v0.19 makes management providers capability-based and runtime-discovered rather than hard-coding a fixed platform list.
 
-TrueNAS App updates use a reusable TrueNAS Connection (URL + encrypted API credentials), so no visible TrueNAS dashboard card is required. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
+TrueNAS App updates use a reusable TrueNAS Connection (URL + encrypted API credentials), so no visible TrueNAS dashboard card is required. A TrueNAS card can also use **TrueNAS System** to detect operating-system updates; installation is intentionally detection-only in v0.19 while reboot-safe host-update recovery is developed. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
 
 ```bash
 docker compose -f compose.yaml -f compose.management.yaml up -d
@@ -112,7 +112,7 @@ The update agent is not required for normal dashboard use. See [Update Manager](
 
 ## Settings, themes, widgets, and extensions
 
-Open **Settings** for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. v0.18 adds local multi-user roles: **Owner** (full control including users), **Admin** (full operational/configuration control except user management), **Editor** (dashboard/page/widget/basic service editing without credentials or update controls), and **Viewer** (read-only). The Account section supports per-user password changes, one-time recovery-code generation, and recent security activity; the login screen can use a saved recovery code when the password is forgotten. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
+Open **Settings** for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. Local multi-user access includes **Owner** (full control including users), **Admin** (full operational/configuration control except user management), **Editor** (dashboard/page/widget/basic service editing without credentials or update controls), and **Viewer** (read-only). The Account section supports per-user password changes, one-time recovery-code generation, and recent security activity; the login screen can use a saved recovery code when the password is forgotten. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
 
 See [Users and roles](docs/configuration/users-roles.md) and [Account recovery](docs/configuration/account-recovery.md) for the local-account security model.
 
