@@ -227,6 +227,8 @@ def test_truenas_host_update_requests_reboot_then_verifies(monkeypatch) -> None:
                 return {"code": "NORMAL", "status": {"new_version": {"version": "25.10.2"}}}
             if method == "system.version_short":
                 return "25.10.1"
+            if method == "update.available_versions":
+                return [{"train": "TrueNAS-SCALE-Goldeye", "version": {"version": "25.10.2"}}]
             if method == "core.get_jobs":
                 return [{"id": 77, "state": "SUCCESS", "progress": {"percent": 100, "description": "Done"}}]
             raise AssertionError(method)
@@ -269,11 +271,24 @@ def test_truenas_host_update_requests_reboot_then_verifies(monkeypatch) -> None:
     assert update_call == [{
         "dataset_name": None,
         "resume": False,
-        "train": None,
+        "train": "TrueNAS-SCALE-Goldeye",
         "version": "25.10.2",
         "reboot": True,
     }]
     assert reconnect == [("job-1", 9, "25.10.2")]
+
+
+def test_truenas_system_update_train_resolves_detected_version() -> None:
+    class FakeTrueNAS:
+        def call(self, method: str, params=None):
+            assert method == "update.available_versions"
+            return [
+                {"train": "TrueNAS-SCALE-Fangtooth", "version": {"version": "25.04.2.6"}},
+                {"train": "TrueNAS-SCALE-Goldeye", "version": {"version": "25.10.6"}},
+            ]
+
+    assert main.truenas_system_update_train(FakeTrueNAS(), "25.10.6") == "TrueNAS-SCALE-Goldeye"
+
 
 
 def test_truenas_rpc_start_job_captures_job_id_from_event(monkeypatch) -> None:

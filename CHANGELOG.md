@@ -4,6 +4,16 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.20.2] - 2026-08-23
+
+### Fixed
+- TrueNAS System host updates now resolve the update train for the detected target version through `update.available_versions` before calling `update.run`.
+- Dashboard now supplies `train` and `version` together, matching the TrueNAS 25.10 validation requirement and preventing `[EFAULT] train and version must either both be null or both be non-null`.
+- The host-update regression test now verifies the exact train/version pair passed to TrueNAS.
+
+### Changed
+- Added regression coverage for mapping a detected TrueNAS system version to its advertised update train.
+
 ## [0.20.1] - 2026-08-23
 
 ### Fixed

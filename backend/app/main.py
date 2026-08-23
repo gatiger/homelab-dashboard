@@ -48,7 +48,7 @@ EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TI
 EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.20.1"
+APP_VERSION = "0.20.2"
 
 
 @asynccontextmanager
@@ -2969,6 +2969,36 @@ def truenas_system_update_status(client: TrueNASRPC) -> tuple[str | None, str | 
     return current_version, latest_version, bool(new_version and latest_version), release_notes_url
 
 
+def truenas_system_update_train(client: TrueNASRPC, target_version: str) -> str:
+    """Return the TrueNAS update train that provides ``target_version``.
+
+    TrueNAS 25.10 requires ``train`` and ``version`` to be supplied together
+    when either value is specified to ``update.run``. ``update.status`` reports
+    the target version but not its train, so resolve the train from
+    ``update.available_versions`` immediately before starting the job.
+    """
+    raw = client.call("update.available_versions")
+    if not isinstance(raw, list):
+        raise RuntimeError("Unexpected TrueNAS available-versions response")
+
+    target = str(target_version or "").strip()
+    target_short = target.removeprefix("TrueNAS-SCALE-")
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        train = str(item.get("train") or "").strip()
+        version_info = item.get("version")
+        if isinstance(version_info, dict):
+            candidate = str(version_info.get("version") or "").strip()
+        else:
+            candidate = str(version_info or "").strip()
+        candidate_short = candidate.removeprefix("TrueNAS-SCALE-")
+        if train and candidate and (candidate == target or candidate_short == target_short):
+            return train
+
+    raise RuntimeError(f"TrueNAS did not report an update train for version {target_version}")
+
+
 def check_docker_compose_update(service: Service, checked_at: str) -> ServiceUpdateState:
     raw = agent_request("/v1/check", method="POST", payload={"resource_id": service.management_target}, timeout=UPDATE_JOB_TIMEOUT)
     if not isinstance(raw, dict):
@@ -3190,12 +3220,19 @@ def perform_truenas_system_update(service: Service, job_id: str) -> None:
             job_id, state="running", progress=5, message="Starting TrueNAS system update",
             current_version=current_version, latest_version=latest_version, detail=None,
         )
-        # TrueNAS update.run is a job method. Reboot is requested as part of the
-        # update so the new boot environment is activated immediately.
+        # TrueNAS 25.10 requires train and version to be supplied together (or
+        # both omitted). Resolve the train for the exact version detected by
+        # update.status so the job cannot fail validation or drift to a
+        # different release between the check and execution.
+        target_train = truenas_system_update_train(client, latest_version)
+        update_job(job_id, progress=7, message=f"Preparing TrueNAS update from {target_train}")
+
+        # update.run is a job method. Reboot is requested as part of the update
+        # so the new boot environment is activated immediately.
         job_number = client.start_job("update.run", [{
             "dataset_name": None,
             "resume": False,
-            "train": None,
+            "train": target_train,
             "version": latest_version,
             "reboot": True,
         }])
