@@ -14,6 +14,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,13 +43,14 @@ UPDATE_AGENT_URL = os.getenv("UPDATE_AGENT_URL", "").strip().rstrip("/")
 UPDATE_AGENT_TOKEN = os.getenv("UPDATE_AGENT_TOKEN", "").strip()
 UPDATE_JOB_TIMEOUT = max(60, min(int(os.getenv("UPDATE_JOB_TIMEOUT", "900")), 3600))
 HOST_UPDATE_RECONNECT_TIMEOUT = max(300, min(int(os.getenv("HOST_UPDATE_RECONNECT_TIMEOUT", "1800")), 7200))
+SERVICE_RECOVERY_TIMEOUT = max(30, min(int(os.getenv("SERVICE_RECOVERY_TIMEOUT", "180")), 1800))
 UPDATE_CHECK_INTERVAL_HOURS = max(0.0, min(float(os.getenv("UPDATE_CHECK_INTERVAL_HOURS", "12")), 168.0))
 EXTENSION_REGISTRY_URL = os.getenv("EXTENSION_REGISTRY_URL", "https://raw.githubusercontent.com/gatiger/homelab-dashboard/main/registry/index.json").strip()
 EXTENSION_REGISTRY_TIMEOUT = max(2.0, min(float(os.getenv("EXTENSION_REGISTRY_TIMEOUT", "8")), 30.0))
 EXTENSION_REGISTRY_CACHE_SECONDS = max(30, min(int(os.getenv("EXTENSION_REGISTRY_CACHE_SECONDS", "300")), 3600))
 SECRET_KEY_PATH = DATA_DIR / "secret.key"
 
-APP_VERSION = "0.20.3"
+APP_VERSION = "0.21.0"
 
 
 @asynccontextmanager
@@ -56,6 +58,7 @@ async def app_lifespan(_: FastAPI):
     init_db()
     recover_host_update_jobs()
     threading.Thread(target=automatic_update_check_loop, daemon=True, name="update-check-loop").start()
+    threading.Thread(target=scheduled_update_loop, daemon=True, name="scheduled-update-loop").start()
     yield
 
 
@@ -217,6 +220,9 @@ class ServiceBase(BaseModel):
     management_target: str | None = Field(default=None, max_length=300)
     management_controller_service_id: int | None = Field(default=None, ge=1)
     management_connection_id: int | None = Field(default=None, ge=1)
+    update_policy: Literal["inherit", "manual", "scheduled", "monitor_only"] = "inherit"
+    update_release_delay_days: int | None = Field(default=None, ge=0, le=90)
+    update_rollback_policy: Literal["inherit", "automatic", "manual"] = "inherit"
 
     @field_validator("management_provider")
     @classmethod
@@ -550,6 +556,13 @@ class DashboardSettings(BaseModel):
     update_status_refresh_seconds: int = Field(default=15, ge=5, le=300)
     active_refresh_seconds: int = Field(default=3, ge=1, le=30)
     update_check_interval_hours: float = Field(default=12, ge=0, le=168)
+    scheduled_updates_enabled: bool = False
+    update_maintenance_days: list[int] = Field(default_factory=lambda: [6], min_length=1, max_length=7)
+    update_maintenance_start: str = "03:00"
+    update_maintenance_end: str = "06:00"
+    update_release_delay_days: int = Field(default=3, ge=0, le=90)
+    update_stop_on_failure: bool = True
+    update_automatic_rollback: bool = True
 
     @field_validator("dashboard_title")
     @classmethod
@@ -557,6 +570,22 @@ class DashboardSettings(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Dashboard title cannot be blank")
+        return value
+
+    @field_validator("update_maintenance_days")
+    @classmethod
+    def validate_maintenance_days(cls, value: list[int]) -> list[int]:
+        cleaned = sorted(set(value))
+        if not cleaned or any(day < 0 or day > 6 for day in cleaned):
+            raise ValueError("Maintenance days must use values 0 through 6")
+        return cleaned
+
+    @field_validator("update_maintenance_start", "update_maintenance_end")
+    @classmethod
+    def validate_maintenance_time(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+            raise ValueError("Maintenance time must use HH:MM 24-hour format")
         return value
 
 
@@ -956,6 +985,13 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     "update_status_refresh_seconds": "15",
     "active_refresh_seconds": "3",
     "update_check_interval_hours": str(UPDATE_CHECK_INTERVAL_HOURS),
+    "scheduled_updates_enabled": "0",
+    "update_maintenance_days": "[6]",
+    "update_maintenance_start": "03:00",
+    "update_maintenance_end": "06:00",
+    "update_release_delay_days": "3",
+    "update_stop_on_failure": "1",
+    "update_automatic_rollback": "1",
 }
 
 
@@ -965,8 +1001,9 @@ def read_dashboard_settings(connection: sqlite3.Connection | None = None) -> Das
     if owns_connection:
         current.row_factory = sqlite3.Row
     try:
+        placeholders = ",".join("?" for _ in SETTINGS_DEFAULTS)
         rows = current.execute(
-            "SELECT key, value FROM app_settings WHERE key IN (?, ?, ?, ?, ?, ?)",
+            f"SELECT key, value FROM app_settings WHERE key IN ({placeholders})",
             tuple(SETTINGS_DEFAULTS.keys()),
         ).fetchall()
         values = dict(SETTINGS_DEFAULTS)
@@ -978,6 +1015,13 @@ def read_dashboard_settings(connection: sqlite3.Connection | None = None) -> Das
             update_status_refresh_seconds=int(float(values["update_status_refresh_seconds"])),
             active_refresh_seconds=int(float(values["active_refresh_seconds"])),
             update_check_interval_hours=float(values["update_check_interval_hours"]),
+            scheduled_updates_enabled=values["scheduled_updates_enabled"] == "1",
+            update_maintenance_days=[int(item) for item in json.loads(values["update_maintenance_days"])],
+            update_maintenance_start=values["update_maintenance_start"],
+            update_maintenance_end=values["update_maintenance_end"],
+            update_release_delay_days=int(float(values["update_release_delay_days"])),
+            update_stop_on_failure=values["update_stop_on_failure"] == "1",
+            update_automatic_rollback=values["update_automatic_rollback"] == "1",
         )
     finally:
         if owns_connection:
@@ -992,6 +1036,13 @@ def save_dashboard_settings(connection: sqlite3.Connection, settings: DashboardS
         "update_status_refresh_seconds": str(settings.update_status_refresh_seconds),
         "active_refresh_seconds": str(settings.active_refresh_seconds),
         "update_check_interval_hours": str(settings.update_check_interval_hours),
+        "scheduled_updates_enabled": "1" if settings.scheduled_updates_enabled else "0",
+        "update_maintenance_days": json.dumps(settings.update_maintenance_days),
+        "update_maintenance_start": settings.update_maintenance_start,
+        "update_maintenance_end": settings.update_maintenance_end,
+        "update_release_delay_days": str(settings.update_release_delay_days),
+        "update_stop_on_failure": "1" if settings.update_stop_on_failure else "0",
+        "update_automatic_rollback": "1" if settings.update_automatic_rollback else "0",
     }
     for key, value in values.items():
         connection.execute(
@@ -1106,6 +1157,8 @@ class ManagementProviderDescriptor(BaseModel):
     bulk_eligible: bool = True
     requires_confirmation: bool = False
     suggested_service_types: list[str] = Field(default_factory=list)
+    rollback_mode: Literal["automatic", "manual", "none"] = "none"
+    recovery_guidance: str | None = None
     warning: str | None = None
 
     @property
@@ -1144,13 +1197,14 @@ class ServiceUpdateState(BaseModel):
     current_version: str | None = None
     latest_version: str | None = None
     checked_at: str | None = None
+    available_since: str | None = None
     message: str | None = None
     can_update: bool = False
 
 
 class UpdateJob(BaseModel):
     id: str
-    kind: Literal["check", "update", "batch", "host_update"]
+    kind: Literal["check", "update", "batch", "scheduled_batch", "host_update"]
     service_id: int | None = None
     active_service_id: int | None = None
     provider: str | None = None
@@ -1161,6 +1215,8 @@ class UpdateJob(BaseModel):
     current_version: str | None = None
     latest_version: str | None = None
     detail: str | None = None
+    trigger: Literal["manual", "scheduled", "recovery"] = "manual"
+    recovery_guidance: str | None = None
     created_at: str
     started_at: str | None = None
     finished_at: str | None = None
@@ -1185,6 +1241,8 @@ MANAGEMENT_PROVIDERS: dict[str, ManagementProviderDescriptor] = {
         name="Docker Compose / Dockge",
         description="Discover and update allow-listed Docker Compose services through the restricted update-agent sidecar.",
         capabilities=["check", "update", "rollback", "progress"],
+        rollback_mode="automatic",
+        recovery_guidance="Open the Compose/Dockge stack, restore the previous image tag or digest if needed, and recreate the affected service.",
         target_label="Compose service",
         target_mode="resource",
         suggested_service_types=["dockge", "docker-host"],
@@ -1194,6 +1252,8 @@ MANAGEMENT_PROVIDERS: dict[str, ManagementProviderDescriptor] = {
         name="TrueNAS App",
         description="Discover and upgrade applications managed by a reusable TrueNAS connection.",
         capabilities=["check", "update", "progress"],
+        rollback_mode="none",
+        recovery_guidance="Open TrueNAS Apps, inspect the failed application and its logs, then restore the app configuration/data from your normal backup or snapshot workflow if the upgrade changed application data.",
         connection_type="truenas",
         target_label="TrueNAS app",
         target_mode="resource",
@@ -1211,6 +1271,8 @@ MANAGEMENT_PROVIDERS: dict[str, ManagementProviderDescriptor] = {
         bulk_eligible=False,
         requires_confirmation=True,
         suggested_service_types=["truenas"],
+        rollback_mode="manual",
+        recovery_guidance="If the new TrueNAS release is unhealthy, use TrueNAS boot environments to activate the previous system boot environment and reboot. App/data recovery remains separate from the boot environment.",
         warning="Host updates require explicit confirmation and are never included in Update All. If Dashboard runs on this host, it will temporarily disconnect during the reboot.",
     ),
 }
@@ -1299,6 +1361,25 @@ def ensure_service_migrations(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE services ADD COLUMN management_controller_service_id INTEGER")
     if "management_connection_id" not in columns:
         connection.execute("ALTER TABLE services ADD COLUMN management_connection_id INTEGER")
+    if "update_policy" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN update_policy TEXT NOT NULL DEFAULT 'inherit'")
+    if "update_release_delay_days" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN update_release_delay_days INTEGER")
+    if "update_rollback_policy" not in columns:
+        connection.execute("ALTER TABLE services ADD COLUMN update_rollback_policy TEXT NOT NULL DEFAULT 'inherit'")
+
+
+def ensure_update_migrations(connection: sqlite3.Connection) -> None:
+    state_columns = {row["name"] for row in connection.execute("PRAGMA table_info(service_update_state)").fetchall()}
+    if "available_since" not in state_columns:
+        connection.execute("ALTER TABLE service_update_state ADD COLUMN available_since TEXT")
+    job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(update_jobs)").fetchall()}
+    if "trigger" not in job_columns:
+        connection.execute("ALTER TABLE update_jobs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'manual'")
+    if "recovery_guidance" not in job_columns:
+        connection.execute("ALTER TABLE update_jobs ADD COLUMN recovery_guidance TEXT")
+    if "recovery_snapshot_json" not in job_columns:
+        connection.execute("ALTER TABLE update_jobs ADD COLUMN recovery_snapshot_json TEXT")
 
 
 def migrate_legacy_truenas_connections(connection: sqlite3.Connection) -> None:
@@ -1584,6 +1665,9 @@ def init_db() -> None:
                 management_target TEXT,
                 management_controller_service_id INTEGER,
                 management_connection_id INTEGER,
+                update_policy TEXT NOT NULL DEFAULT 'inherit',
+                update_release_delay_days INTEGER,
+                update_rollback_policy TEXT NOT NULL DEFAULT 'inherit',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -1611,6 +1695,7 @@ def init_db() -> None:
                 current_version TEXT,
                 latest_version TEXT,
                 checked_at TEXT,
+                available_since TEXT,
                 message TEXT,
                 FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE
             );
@@ -1628,6 +1713,9 @@ def init_db() -> None:
                 current_version TEXT,
                 latest_version TEXT,
                 detail TEXT,
+                trigger TEXT NOT NULL DEFAULT 'manual',
+                recovery_guidance TEXT,
+                recovery_snapshot_json TEXT,
                 created_at TEXT NOT NULL,
                 started_at TEXT,
                 finished_at TEXT
@@ -1637,6 +1725,7 @@ def init_db() -> None:
         ensure_account_migrations(connection)
         ensure_multi_user_migration(connection)
         ensure_service_migrations(connection)
+        ensure_update_migrations(connection)
         category_columns = {row["name"] for row in connection.execute("PRAGMA table_info(category_layouts)").fetchall()}
         if "icon" not in category_columns:
             connection.execute("ALTER TABLE category_layouts ADD COLUMN icon TEXT")
@@ -1679,6 +1768,114 @@ def automatic_update_check_loop() -> None:
             pass
         # Short wake interval lets Settings changes take effect without a restart.
         time.sleep(300)
+
+
+def maintenance_window_key(settings: DashboardSettings, now: datetime | None = None) -> str | None:
+    current = now or datetime.now().astimezone()
+    start_hour, start_minute = [int(part) for part in settings.update_maintenance_start.split(":", 1)]
+    end_hour, end_minute = [int(part) for part in settings.update_maintenance_end.split(":", 1)]
+    current_minutes = current.hour * 60 + current.minute
+    start_minutes = start_hour * 60 + start_minute
+    end_minutes = end_hour * 60 + end_minute
+    selected = set(settings.update_maintenance_days)
+
+    if start_minutes == end_minutes:
+        return current.date().isoformat() if current.weekday() in selected else None
+    if start_minutes < end_minutes:
+        if current.weekday() in selected and start_minutes <= current_minutes < end_minutes:
+            return f"{current.date().isoformat()}@{settings.update_maintenance_start}"
+        return None
+
+    # Overnight window: the early-morning portion belongs to the previous
+    # selected maintenance day.
+    if current_minutes >= start_minutes and current.weekday() in selected:
+        return f"{current.date().isoformat()}@{settings.update_maintenance_start}"
+    previous = current - timedelta(days=1)
+    if current_minutes < end_minutes and previous.weekday() in selected:
+        return f"{previous.date().isoformat()}@{settings.update_maintenance_start}"
+    return None
+
+
+def service_is_scheduled(service: Service, settings: DashboardSettings) -> bool:
+    if service.update_policy in {"manual", "monitor_only"}:
+        return False
+    if service.update_policy == "scheduled":
+        return True
+    return settings.scheduled_updates_enabled
+
+
+def service_release_delay_days(service: Service, settings: DashboardSettings) -> int:
+    return service.update_release_delay_days if service.update_release_delay_days is not None else settings.update_release_delay_days
+
+
+def scheduled_service_ids(settings: DashboardSettings) -> list[int]:
+    now = utcnow()
+    with db() as connection:
+        rows = connection.execute(
+            """SELECT s.*, u.state AS update_state, u.available_since AS update_available_since
+               FROM services s
+               JOIN service_update_state u ON u.service_id = s.id
+               WHERE u.state = 'available' AND s.management_provider != 'none'
+               ORDER BY s.name COLLATE NOCASE"""
+        ).fetchall()
+    eligible: list[int] = []
+    for row in rows:
+        service = row_to_service(row)
+        descriptor = management_provider_descriptor(service.management_provider)
+        if not descriptor or not descriptor.can_update or not descriptor.bulk_eligible or descriptor.update_scope == "host":
+            continue
+        if not service_is_scheduled(service, settings):
+            continue
+        available_since_raw = row["update_available_since"]
+        try:
+            available_since = datetime.fromisoformat(available_since_raw) if available_since_raw else now
+        except ValueError:
+            available_since = now
+        delay = timedelta(days=service_release_delay_days(service, settings))
+        if now - available_since >= delay:
+            eligible.append(service.id)
+    return eligible
+
+
+def scheduled_update_loop() -> None:
+    # Scheduled installation is deliberately opt-in and independent of update
+    # discovery. A maintenance window performs a fresh check before selecting
+    # work, then records the window before starting so a dashboard restart does
+    # not repeat unattended updates in the same window.
+    time.sleep(90)
+    while True:
+        try:
+            with db() as connection:
+                settings = read_dashboard_settings(connection)
+                active = connection.execute("SELECT 1 FROM update_jobs WHERE state IN ('queued','running','reconnecting') LIMIT 1").fetchone()
+                last_window_row = connection.execute("SELECT value FROM app_settings WHERE key = 'scheduled_updates_last_window'").fetchone()
+            window_key = maintenance_window_key(settings)
+            last_window = last_window_row["value"] if last_window_row else None
+            if settings.scheduled_updates_enabled and window_key and not active and last_window != window_key:
+                with db() as connection:
+                    rows = connection.execute("SELECT * FROM services WHERE management_provider != 'none' ORDER BY name COLLATE NOCASE").fetchall()
+                for row in rows:
+                    try:
+                        check_service_update(row)
+                    except Exception:
+                        pass
+                service_ids = scheduled_service_ids(settings)
+                with db() as connection:
+                    connection.execute(
+                        "INSERT INTO app_settings (key, value) VALUES ('scheduled_updates_last_window', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (window_key,),
+                    )
+                if service_ids:
+                    job = create_update_job("scheduled_batch", message=f"Scheduled maintenance queued · {len(service_ids)} service{'s' if len(service_ids) != 1 else ''}", trigger="scheduled")
+                    threading.Thread(
+                        target=batch_update_worker,
+                        args=(job.id, service_ids, settings.update_stop_on_failure),
+                        daemon=True,
+                        name=f"scheduled-updates-{job.id[:8]}",
+                    ).start()
+        except Exception:
+            pass
+        time.sleep(60)
 
 
 def get_fernet() -> Fernet:
@@ -1898,6 +2095,9 @@ def row_to_service(row: sqlite3.Row) -> Service:
         management_target=row["management_target"],
         management_controller_service_id=None if row["management_connection_id"] else row["management_controller_service_id"],
         management_connection_id=row["management_connection_id"],
+        update_policy=row["update_policy"] if "update_policy" in row.keys() and row["update_policy"] in {"inherit", "manual", "scheduled", "monitor_only"} else "inherit",
+        update_release_delay_days=(int(row["update_release_delay_days"]) if "update_release_delay_days" in row.keys() and row["update_release_delay_days"] is not None else None),
+        update_rollback_policy=row["update_rollback_policy"] if "update_rollback_policy" in row.keys() and row["update_rollback_policy"] in {"inherit", "automatic", "manual"} else "inherit",
         has_api_key=bool(row["api_key_encrypted"]),
         has_auth_username=bool(row["auth_username_encrypted"]),
         has_auth_credentials=bool(row["auth_username_encrypted"] and row["auth_password_encrypted"]),
@@ -2880,6 +3080,7 @@ def row_to_update_state(row: sqlite3.Row) -> ServiceUpdateState:
     return ServiceUpdateState(
         service_id=int(row["service_id"]), provider=provider, target=row["target"], state=state,
         current_version=row["current_version"], latest_version=row["latest_version"], checked_at=row["checked_at"],
+        available_since=row["available_since"] if "available_since" in row.keys() else None,
         message=row["message"], can_update=state == "available" and management_provider_can_update(provider),
     )
 
@@ -2889,28 +3090,45 @@ def row_to_update_job(row: sqlite3.Row) -> UpdateJob:
         id=row["id"], kind=row["kind"], service_id=row["service_id"], active_service_id=row["active_service_id"],
         provider=row["provider"], target=row["target"], state=row["state"], progress=int(row["progress"] or 0),
         message=row["message"], current_version=row["current_version"], latest_version=row["latest_version"], detail=row["detail"],
+        trigger=(row["trigger"] if "trigger" in row.keys() and row["trigger"] in {"manual", "scheduled", "recovery"} else "manual"),
+        recovery_guidance=row["recovery_guidance"] if "recovery_guidance" in row.keys() else None,
         created_at=row["created_at"], started_at=row["started_at"], finished_at=row["finished_at"],
     )
 
 
 def save_update_state(state_obj: ServiceUpdateState) -> None:
     with db() as connection:
+        existing = connection.execute("SELECT state, current_version, latest_version, available_since FROM service_update_state WHERE service_id = ?", (state_obj.service_id,)).fetchone()
+        available_since = state_obj.available_since
+        current_version = state_obj.current_version
+        latest_version = state_obj.latest_version
+        if state_obj.state == "checking" and existing:
+            current_version = current_version or existing["current_version"]
+            latest_version = latest_version or existing["latest_version"]
+            available_since = available_since or existing["available_since"]
+        if state_obj.state == "available":
+            if not available_since and existing and existing["state"] in {"available", "checking"} and existing["latest_version"] == state_obj.latest_version:
+                available_since = existing["available_since"]
+            available_since = available_since or state_obj.checked_at or iso_now()
+        elif state_obj.state != "checking":
+            available_since = None
         connection.execute(
-            """INSERT INTO service_update_state (service_id, provider, target, state, current_version, latest_version, checked_at, message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO service_update_state (service_id, provider, target, state, current_version, latest_version, checked_at, available_since, message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(service_id) DO UPDATE SET provider=excluded.provider, target=excluded.target, state=excluded.state,
-               current_version=excluded.current_version, latest_version=excluded.latest_version, checked_at=excluded.checked_at, message=excluded.message""",
-            (state_obj.service_id, state_obj.provider, state_obj.target, state_obj.state, state_obj.current_version, state_obj.latest_version, state_obj.checked_at, state_obj.message),
+               current_version=excluded.current_version, latest_version=excluded.latest_version, checked_at=excluded.checked_at,
+               available_since=excluded.available_since, message=excluded.message""",
+            (state_obj.service_id, state_obj.provider, state_obj.target, state_obj.state, current_version, latest_version, state_obj.checked_at, available_since, state_obj.message),
         )
 
 
-def create_update_job(kind: str, service_id: int | None = None, provider: str | None = None, target: str | None = None, message: str = "Queued") -> UpdateJob:
+def create_update_job(kind: str, service_id: int | None = None, provider: str | None = None, target: str | None = None, message: str = "Queued", trigger: str = "manual") -> UpdateJob:
     job_id = uuid.uuid4().hex
     now = iso_now()
     with db() as connection:
         connection.execute(
-            "INSERT INTO update_jobs (id, kind, service_id, active_service_id, provider, target, state, progress, message, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)",
-            (job_id, kind, service_id, service_id, provider, target, message, now),
+            "INSERT INTO update_jobs (id, kind, service_id, active_service_id, provider, target, state, progress, message, trigger, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)",
+            (job_id, kind, service_id, service_id, provider, target, message, trigger, now),
         )
         row = connection.execute("SELECT * FROM update_jobs WHERE id = ?", (job_id,)).fetchone()
     return row_to_update_job(row)
@@ -2919,7 +3137,7 @@ def create_update_job(kind: str, service_id: int | None = None, provider: str | 
 def update_job(job_id: str, **changes: object) -> None:
     if not changes:
         return
-    allowed = {"active_service_id", "state", "progress", "message", "current_version", "latest_version", "detail", "started_at", "finished_at", "provider", "target"}
+    allowed = {"active_service_id", "state", "progress", "message", "current_version", "latest_version", "detail", "started_at", "finished_at", "provider", "target", "trigger", "recovery_guidance", "recovery_snapshot_json"}
     parts: list[str] = []
     values: list[object] = []
     for key, value in changes.items():
@@ -3119,7 +3337,74 @@ def check_updates_worker(job_id: str) -> None:
         update_job(job_id, state="failed", progress=100, message="Update check failed", detail=str(exc)[:1000], finished_at=iso_now())
 
 
-def perform_docker_update(service: Service, job_id: str, start: int = 5, end: int = 100) -> tuple[str | None, str | None, str]:
+@dataclass
+class HealthBaseline:
+    status_state: str | None = None
+    integration_state: str | None = None
+
+
+@dataclass
+class ProviderUpdateResult:
+    current_version: str | None
+    latest_version: str | None
+    outcome: str
+    rollback_token: str | None = None
+
+
+def capture_service_health_baseline(service_id: int) -> HealthBaseline:
+    row = get_service_row(service_id)
+    service = row_to_service(row)
+    status_state = probe_service(service).state if service.status_check else None
+    integration_state = insight_for_row(row).state if service.type in INTEGRATIONS else None
+    return HealthBaseline(status_state=status_state, integration_state=integration_state)
+
+
+def verify_service_health(service_id: int, baseline: HealthBaseline, timeout: int = SERVICE_RECOVERY_TIMEOUT) -> tuple[bool, str]:
+    service = row_to_service(get_service_row(service_id))
+    # Only require health signals that were healthy enough to be meaningful
+    # before the update. Existing offline/setup states must not turn a safe
+    # update into a false failure.
+    require_status = baseline.status_state in {"online", "degraded"}
+    require_integration = baseline.integration_state == "ok"
+    if not require_status and not require_integration:
+        return True, "No pre-update health signal required verification"
+
+    deadline = time.time() + timeout
+    last_parts: list[str] = []
+    while time.time() < deadline:
+        row = get_service_row(service_id)
+        service = row_to_service(row)
+        status_result = probe_service(service) if require_status else None
+        insight_result = insight_for_row(row) if require_integration else None
+        status_ok = not require_status or (status_result is not None and status_result.state in {"online", "degraded"})
+        integration_ok = not require_integration or (insight_result is not None and insight_result.state == "ok")
+        last_parts = []
+        if status_result is not None:
+            last_parts.append(f"HTTP status: {status_result.state}{f' ({status_result.detail})' if status_result.detail else ''}")
+        if insight_result is not None:
+            last_parts.append(f"Integration: {insight_result.state}{f' ({insight_result.secondary})' if insight_result.secondary else ''}")
+        if status_ok and integration_ok:
+            return True, " · ".join(last_parts) or "Service health verified"
+        time.sleep(3)
+    return False, " · ".join(last_parts) or "Service did not recover before the verification timeout"
+
+
+def effective_rollback_automatic(service: Service, settings: DashboardSettings) -> bool:
+    if service.update_rollback_policy == "automatic":
+        return True
+    if service.update_rollback_policy == "manual":
+        return False
+    return settings.update_automatic_rollback
+
+
+def recovery_guidance_for_service(service: Service) -> str:
+    descriptor = management_provider_descriptor(service.management_provider)
+    if descriptor and descriptor.recovery_guidance:
+        return descriptor.recovery_guidance
+    return "Open the service's native management interface, review its logs, and restore the previous version or application data using the platform's normal recovery workflow."
+
+
+def perform_docker_update(service: Service, job_id: str, start: int = 5, end: int = 100) -> ProviderUpdateResult:
     raw = agent_request("/v1/update", method="POST", payload={"resource_id": service.management_target}, timeout=30)
     if not isinstance(raw, dict) or not raw.get("id"):
         raise RuntimeError("Update agent did not return a job id")
@@ -3134,16 +3419,18 @@ def perform_docker_update(service: Service, job_id: str, start: int = 5, end: in
         update_job(job_id, progress=min(end, mapped), message=str(status_raw.get("stage") or "Updating container"), current_version=status_raw.get("current_version"), latest_version=status_raw.get("latest_version"), detail=status_raw.get("detail"))
         state = status_raw.get("state")
         if state == "success":
-            return status_raw.get("current_version"), status_raw.get("latest_version"), "success"
+            return ProviderUpdateResult(status_raw.get("current_version"), status_raw.get("latest_version"), "success")
+        if state == "verification_pending":
+            return ProviderUpdateResult(status_raw.get("current_version"), status_raw.get("latest_version"), "verification_pending", agent_job_id)
         if state == "rolled_back":
-            return status_raw.get("current_version"), status_raw.get("latest_version"), "rolled_back"
+            return ProviderUpdateResult(status_raw.get("current_version"), status_raw.get("latest_version"), "rolled_back")
         if state == "failed":
             raise RuntimeError(str(status_raw.get("detail") or "Docker update failed"))
         time.sleep(1.5)
     raise RuntimeError("Docker update timed out")
 
 
-def perform_truenas_update(service: Service, job_id: str, start: int = 5, end: int = 100) -> tuple[str | None, str | None, str]:
+def perform_truenas_update(service: Service, job_id: str, start: int = 5, end: int = 100) -> ProviderUpdateResult:
     if not service.management_target:
         raise RuntimeError("TrueNAS update target is incomplete")
     if service.management_connection_id:
@@ -3186,9 +3473,80 @@ def perform_truenas_update(service: Service, job_id: str, start: int = 5, end: i
                 raise RuntimeError(str(error or f"TrueNAS app upgrade {state.lower()}"))
             if state == "SUCCESS" or (str(app_now.get("state") or "").upper() == "RUNNING" and not bool(app_now.get("upgrade_available") or app_now.get("image_updates_available"))):
                 final_version = str(app_now.get("human_version") or app_now.get("version") or latest_version or "") or latest_version
-                return current_version, final_version, "success"
+                return ProviderUpdateResult(current_version, final_version, "success")
             time.sleep(2)
         raise RuntimeError("TrueNAS app upgrade timed out")
+
+
+def capture_host_recovery_snapshot(host_service_id: int) -> list[dict[str, object]]:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT * FROM services WHERE enabled = 1 AND status_check = 1 AND id != ? ORDER BY name COLLATE NOCASE",
+            (host_service_id,),
+        ).fetchall()
+    services = [row_to_service(row) for row in rows]
+    if not services:
+        return []
+    online: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=min(STATUS_WORKERS, len(services))) as executor:
+        futures = {executor.submit(probe_service, service): service for service in services}
+        for future in as_completed(futures):
+            service = futures[future]
+            try:
+                status_result = future.result()
+            except Exception:
+                continue
+            if status_result.state in {"online", "degraded"}:
+                online.append({"id": service.id, "name": service.name})
+    return sorted(online, key=lambda item: str(item["name"]).casefold())
+
+
+def load_host_recovery_snapshot(job_id: str) -> list[dict[str, object]]:
+    with db() as connection:
+        row = connection.execute("SELECT recovery_snapshot_json FROM update_jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row or not row["recovery_snapshot_json"]:
+        return []
+    try:
+        raw = json.loads(row["recovery_snapshot_json"])
+    except json.JSONDecodeError:
+        return []
+    return [item for item in raw if isinstance(item, dict) and isinstance(item.get("id"), int) and item.get("name")]
+
+
+def verify_host_recovery_services(job_id: str) -> tuple[list[str], list[str]]:
+    snapshot = load_host_recovery_snapshot(job_id)
+    if not snapshot:
+        return [], []
+    remaining = {int(item["id"]): str(item["name"]) for item in snapshot}
+    recovered: set[int] = set()
+    deadline = time.time() + SERVICE_RECOVERY_TIMEOUT
+    while time.time() < deadline and remaining:
+        services: list[Service] = []
+        for service_id in list(remaining):
+            try:
+                services.append(row_to_service(get_service_row(service_id)))
+            except Exception:
+                remaining.pop(service_id, None)
+        if not services:
+            break
+        with ThreadPoolExecutor(max_workers=min(STATUS_WORKERS, len(services))) as executor:
+            futures = {executor.submit(probe_service, service): service.id for service in services}
+            for future in as_completed(futures):
+                service_id = futures[future]
+                try:
+                    if future.result().state in {"online", "degraded"}:
+                        recovered.add(service_id)
+                        remaining.pop(service_id, None)
+                except Exception:
+                    pass
+        if remaining:
+            names = ", ".join(list(remaining.values())[:5])
+            suffix = "…" if len(remaining) > 5 else ""
+            update_job(job_id, state="reconnecting", progress=97, message=f"Host is ready; waiting for {len(remaining)} service{'s' if len(remaining) != 1 else ''} to recover", detail=f"Still waiting: {names}{suffix}")
+            time.sleep(8)
+    recovered_names = [str(item["name"]) for item in snapshot if int(item["id"]) in recovered]
+    missing_names = list(remaining.values())
+    return recovered_names, missing_names
 
 
 def wait_for_truenas_system_reconnect(job_id: str, service_id: int, expected_version: str | None) -> None:
@@ -3207,8 +3565,18 @@ def wait_for_truenas_system_reconnect(job_id: str, service_id: int, expected_ver
                     state="current", current_version=current_version, latest_version=current_version, checked_at=iso_now(),
                     message="Host update completed and the system is ready", can_update=False,
                 ))
+                recovered, missing = verify_host_recovery_services(job_id)
+                if missing:
+                    detail = f"Host update succeeded, but these previously-online services did not recover before the verification timeout: {', '.join(missing)}"
+                    update_job(
+                        job_id, state="success", progress=100,
+                        message=f"Host update completed; {len(missing)} service{'s' if len(missing) != 1 else ''} need attention",
+                        latest_version=current_version or expected_version, detail=detail[:1200], finished_at=iso_now(), active_service_id=None,
+                    )
+                    return
                 update_job(
-                    job_id, state="success", progress=100, message="Host update completed; system is back online",
+                    job_id, state="success", progress=100,
+                    message=f"Host update completed; system and {len(recovered)} monitored service{'s' if len(recovered) != 1 else ''} recovered",
                     latest_version=current_version or expected_version, detail=None, finished_at=iso_now(), active_service_id=None,
                 )
                 return
@@ -3218,9 +3586,14 @@ def wait_for_truenas_system_reconnect(job_id: str, service_id: int, expected_ver
             last_detail = str(exc)[:500]
             update_job(job_id, state="reconnecting", progress=92, message="Host is restarting; waiting to reconnect", detail=None)
         time.sleep(8)
+    try:
+        guidance = recovery_guidance_for_service(row_to_service(get_service_row(service_id)))
+    except Exception:
+        guidance = "Use the host platform's native recovery tools and previous-version/boot-environment workflow."
     update_job(
         job_id, state="failed", progress=100, message="Host update could not be verified after restart",
-        detail=(last_detail or "The managed host did not return before the reconnect timeout")[:1200], finished_at=iso_now(),
+        detail=(last_detail or "The managed host did not return before the reconnect timeout")[:1200],
+        recovery_guidance=guidance, finished_at=iso_now(),
     )
 
 
@@ -3235,6 +3608,8 @@ def perform_truenas_system_update(service: Service, job_id: str) -> None:
             job_id, state="running", progress=5, message="Starting TrueNAS system update",
             current_version=current_version, latest_version=latest_version, detail=None,
         )
+        snapshot = capture_host_recovery_snapshot(service.id)
+        update_job(job_id, recovery_snapshot_json=json.dumps(snapshot, separators=(",", ":")))
         # TrueNAS 25.10 requires train and version to be supplied together (or
         # both omitted). Resolve the train for the exact version detected by
         # update.status so the job cannot fail validation or drift to a
@@ -3287,7 +3662,11 @@ def host_update_worker(job_id: str, service_id: int) -> None:
             raise RuntimeError("This host update provider is not implemented")
         perform_truenas_system_update(service, job_id)
     except Exception as exc:
-        update_job(job_id, state="failed", progress=100, message="Host update failed", detail=str(exc)[:1200], finished_at=iso_now())
+        try:
+            guidance = recovery_guidance_for_service(row_to_service(get_service_row(service_id)))
+        except Exception:
+            guidance = "Use the host platform's native recovery tools and previous-version/boot-environment workflow."
+        update_job(job_id, state="failed", progress=100, message="Host update failed", detail=str(exc)[:1200], recovery_guidance=guidance, finished_at=iso_now())
 
 
 def resume_host_update_worker(job_id: str, service_id: int, expected_version: str | None) -> None:
@@ -3331,13 +3710,53 @@ def perform_service_update(service_id: int, job_id: str, start: int = 5, end: in
     performer = MANAGEMENT_UPDATE_PERFORMERS.get(service.management_provider)
     if not performer:
         raise RuntimeError(f"{descriptor.name} does not provide an update installer")
+    baseline = capture_service_health_baseline(service.id)
+    with db() as connection:
+        settings = read_dashboard_settings(connection)
     update_job(job_id, active_service_id=service.id, provider=service.management_provider, target=service.management_target, progress=start, message=f"Preparing {service.name}")
-    current, latest, outcome = performer(service, job_id, start, end)
-    if outcome == "rolled_back":
-        save_update_state(ServiceUpdateState(service_id=service.id, provider=service.management_provider, target=service.management_target, state="available", current_version=latest or current, latest_version=None, checked_at=iso_now(), message="Update failed and the previous image was restored"))
+    result = performer(service, job_id, start, max(start + 1, end - 8))
+    if result.outcome == "rolled_back":
+        save_update_state(ServiceUpdateState(service_id=service.id, provider=service.management_provider, target=service.management_target, state="available", current_version=result.latest_version or result.current_version, latest_version=None, checked_at=iso_now(), message="Update failed and the previous image was restored"))
         return "rolled_back"
+
+    update_job(job_id, progress=max(start + 1, end - 7), message=f"Verifying {service.name} after update")
+    healthy, health_detail = verify_service_health(service.id, baseline)
+    if result.rollback_token:
+        if healthy:
+            agent_request(f"/v1/jobs/{result.rollback_token}/commit", method="POST", payload={}, timeout=30)
+        elif descriptor.rollback_mode == "automatic" and effective_rollback_automatic(service, settings):
+            update_job(job_id, progress=max(start + 1, end - 4), message=f"{service.name} failed verification; rolling back", detail=health_detail[:1000])
+            rollback_raw = agent_request(
+                f"/v1/jobs/{result.rollback_token}/rollback",
+                method="POST",
+                payload={"reason": health_detail[:900]},
+                timeout=UPDATE_JOB_TIMEOUT,
+            )
+            if isinstance(rollback_raw, dict) and rollback_raw.get("state") == "rolled_back":
+                save_update_state(ServiceUpdateState(
+                    service_id=service.id,
+                    provider=service.management_provider,
+                    target=service.management_target,
+                    state="available",
+                    current_version=result.current_version,
+                    latest_version=result.latest_version,
+                    checked_at=iso_now(),
+                    message="Update failed health verification and was automatically rolled back",
+                ))
+                update_job(job_id, recovery_guidance=None, detail=health_detail[:1200])
+                return "rolled_back"
+            rollback_detail = str(rollback_raw.get("detail") if isinstance(rollback_raw, dict) else rollback_raw)
+            guidance = recovery_guidance_for_service(service)
+            update_job(job_id, recovery_guidance=guidance)
+            raise RuntimeError(f"Post-update verification failed and automatic rollback failed: {rollback_detail or health_detail}")
+
+    if not healthy:
+        guidance = recovery_guidance_for_service(service)
+        update_job(job_id, recovery_guidance=guidance)
+        raise RuntimeError(f"Post-update verification failed: {health_detail}")
+
     state = check_service_update(get_service_row(service.id))
-    update_job(job_id, current_version=current, latest_version=state.current_version or latest)
+    update_job(job_id, current_version=result.current_version, latest_version=state.current_version or result.latest_version, detail=health_detail[:1200])
     return "success"
 
 
@@ -3350,30 +3769,52 @@ def service_update_worker(job_id: str, service_id: int) -> None:
         else:
             update_job(job_id, state="success", progress=100, message="Update complete", finished_at=iso_now(), active_service_id=None)
     except Exception as exc:
-        update_job(job_id, state="failed", progress=100, message="Update failed", detail=str(exc)[:1200], finished_at=iso_now())
+        try:
+            guidance = recovery_guidance_for_service(row_to_service(get_service_row(service_id)))
+        except Exception:
+            guidance = None
+        update_job(job_id, state="failed", progress=100, message="Update failed", detail=str(exc)[:1200], recovery_guidance=guidance, finished_at=iso_now())
 
 
-def batch_update_worker(job_id: str) -> None:
+def batch_update_worker(job_id: str, service_ids: list[int] | None = None, stop_on_failure: bool = True) -> None:
     update_job(job_id, state="running", started_at=iso_now(), progress=1, message="Preparing update queue")
+    failures: list[str] = []
     try:
         with db() as connection:
-            cached_rows = connection.execute("""SELECT s.id, s.name, s.management_provider FROM services s JOIN service_update_state u ON u.service_id=s.id
-                                                WHERE u.state='available' AND s.management_provider!='none' ORDER BY s.name COLLATE NOCASE""").fetchall()
+            if service_ids:
+                placeholders = ",".join("?" for _ in service_ids)
+                cached_rows = connection.execute(
+                    f"""SELECT s.id, s.name, s.management_provider FROM services s JOIN service_update_state u ON u.service_id=s.id
+                         WHERE u.state='available' AND s.management_provider!='none' AND s.id IN ({placeholders}) ORDER BY s.name COLLATE NOCASE""",
+                    tuple(service_ids),
+                ).fetchall()
+            else:
+                cached_rows = connection.execute("""SELECT s.id, s.name, s.management_provider FROM services s JOIN service_update_state u ON u.service_id=s.id
+                                                    WHERE u.state='available' AND s.management_provider!='none' ORDER BY s.name COLLATE NOCASE""").fetchall()
         cached = [item for item in cached_rows if management_provider_bulk_eligible(item["management_provider"] or "none")]
         if not cached:
-            update_job(job_id, state="success", progress=100, message="No available updates", finished_at=iso_now(), active_service_id=None)
+            update_job(job_id, state="success", progress=100, message="No eligible updates", finished_at=iso_now(), active_service_id=None)
             return
         total = len(cached)
         for index, item in enumerate(cached):
             segment_start = round(index / total * 100)
             segment_end = round((index + 1) / total * 100)
             update_job(job_id, active_service_id=int(item["id"]), message=f"Updating {item['name']}", progress=segment_start)
-            outcome = perform_service_update(int(item["id"]), job_id, max(1, segment_start), max(segment_start + 1, segment_end))
-            if outcome == "rolled_back":
-                raise RuntimeError(f"{item['name']} failed its health check and was rolled back; batch stopped")
-        update_job(job_id, active_service_id=None, state="success", progress=100, message="All available updates completed", finished_at=iso_now())
+            try:
+                outcome = perform_service_update(int(item["id"]), job_id, max(1, segment_start), max(segment_start + 1, segment_end))
+                if outcome == "rolled_back":
+                    raise RuntimeError(f"{item['name']} failed verification and was rolled back")
+            except Exception as exc:
+                failures.append(f"{item['name']}: {exc}")
+                if stop_on_failure:
+                    raise RuntimeError(failures[-1]) from exc
+        if failures:
+            update_job(job_id, active_service_id=None, state="failed", progress=100, message="Maintenance completed with failures", detail=" · ".join(failures)[:1200], finished_at=iso_now())
+        else:
+            update_job(job_id, active_service_id=None, state="success", progress=100, message="All eligible updates completed", finished_at=iso_now())
     except Exception as exc:
-        update_job(job_id, state="failed", progress=100, message="Update-all stopped", detail=str(exc)[:1200], finished_at=iso_now())
+        label = "Scheduled maintenance stopped" if service_ids is not None else "Update-all stopped"
+        update_job(job_id, state="failed", progress=100, message=label, detail=str(exc)[:1200], finished_at=iso_now())
 
 
 @app.get("/api/connections", response_model=list[ManagementConnection])
@@ -3555,13 +3996,16 @@ def truenas_management_apps(controller_service_id: int, _: SessionUser = Depends
 @app.get("/api/updates/status", response_model=list[ServiceUpdateState])
 def update_statuses(_: SessionUser = Depends(require_auth)) -> list[ServiceUpdateState]:
     with db() as connection:
-        services = connection.execute("SELECT id, management_provider, management_target FROM services ORDER BY id").fetchall()
+        services = connection.execute("SELECT id, management_provider, management_target, update_policy FROM services ORDER BY id").fetchall()
         cached = {row["service_id"]: row for row in connection.execute("SELECT * FROM service_update_state").fetchall()}
     results: list[ServiceUpdateState] = []
     for service in services:
         row = cached.get(service["id"])
         if row:
-            results.append(row_to_update_state(row))
+            state_obj = row_to_update_state(row)
+            if service["update_policy"] == "monitor_only":
+                state_obj.can_update = False
+            results.append(state_obj)
         else:
             provider = service["management_provider"] or "none"
             state: UpdateStateName = "unconfigured" if provider == "none" or not service["management_target"] else "unknown"
@@ -3587,6 +4031,8 @@ def start_service_update(service_id: int, _: SessionUser = Depends(require_updat
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     service = row_to_service(row)
+    if service.update_policy == "monitor_only":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This service is configured for update monitoring only")
     if service.management_provider == "none" or not service.management_target:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update management is not configured for this service")
     descriptor = management_provider_descriptor(service.management_provider)
@@ -3614,6 +4060,8 @@ def start_host_update(service_id: int, payload: HostUpdateRequest, _: SessionUse
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     service = row_to_service(row)
+    if service.update_policy == "monitor_only":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This host is configured for update monitoring only")
     descriptor = management_provider_descriptor(service.management_provider)
     if not descriptor or descriptor.update_scope != "host" or not descriptor.can_update:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This service is not configured for host-level updates")
@@ -4678,9 +5126,9 @@ def clone_page(page_id: int, payload: PageCloneRequest, _: SessionUser = Depends
             connection.execute("INSERT INTO category_layouts (page_id, name, sort_order, collapsed, icon) VALUES (?, ?, ?, ?, ?)", (new_page_id, category["name"], category["sort_order"], category["collapsed"], category["icon"] if "icon" in category.keys() else None))
         for service in connection.execute("SELECT * FROM services WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
             connection.execute(
-                """INSERT INTO services (name, type, url, internal_url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (service["name"], service["type"], service["url"], service["internal_url"], service["category"], new_page_id, service["icon"], service["enabled"], service["status_check"], service["favorite"], service["card_size"], service["sort_order"], service["api_key_encrypted"], service["auth_username_encrypted"], service["auth_password_encrypted"], service["management_provider"], service["management_target"], service["management_controller_service_id"], service["management_connection_id"], now, now),
+                """INSERT INTO services (name, type, url, internal_url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, update_policy, update_release_delay_days, update_rollback_policy, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (service["name"], service["type"], service["url"], service["internal_url"], service["category"], new_page_id, service["icon"], service["enabled"], service["status_check"], service["favorite"], service["card_size"], service["sort_order"], service["api_key_encrypted"], service["auth_username_encrypted"], service["auth_password_encrypted"], service["management_provider"], service["management_target"], service["management_controller_service_id"], service["management_connection_id"], service["update_policy"], service["update_release_delay_days"], service["update_rollback_policy"], now, now),
             )
         for widget in connection.execute("SELECT * FROM dashboard_widgets WHERE page_id = ? ORDER BY category COLLATE NOCASE, sort_order, id", (page_id,)).fetchall():
             connection.execute("""INSERT INTO dashboard_widgets (type, title, page_id, category, card_size, sort_order, enabled, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (widget["type"], widget["title"], new_page_id, widget["category"], widget["card_size"], widget["sort_order"], widget["enabled"], widget["config_json"], now, now))
@@ -4901,6 +5349,7 @@ def create_service(service: ServiceCreate, user: SessionUser = Depends(require_s
         service.api_key or service.auth_username or service.auth_password or service.clear_api_key
         or service.clear_auth_credentials or service.management_provider != "none"
         or service.management_target or service.management_controller_service_id or service.management_connection_id
+        or service.update_policy != "inherit" or service.update_release_delay_days is not None or service.update_rollback_policy != "inherit"
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Editors cannot configure credentials or management providers")
     now = iso_now()
@@ -4909,8 +5358,8 @@ def create_service(service: ServiceCreate, user: SessionUser = Depends(require_s
         ensure_category_layout(connection, service.page_id, service.category)
         cursor = connection.execute(
             """
-            INSERT INTO services (name, type, url, internal_url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO services (name, type, url, internal_url, category, page_id, icon, enabled, status_check, favorite, card_size, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, update_policy, update_release_delay_days, update_rollback_policy, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service.name,
@@ -4932,6 +5381,9 @@ def create_service(service: ServiceCreate, user: SessionUser = Depends(require_s
                 service.management_target,
                 service.management_controller_service_id,
                 service.management_connection_id,
+                service.update_policy,
+                service.update_release_delay_days,
+                service.update_rollback_policy,
                 now,
                 now,
             ),
@@ -4945,7 +5397,7 @@ def update_service(service_id: int, service: ServiceUpdate, user: SessionUser = 
     validate_management_provider_id(service.management_provider)
     now = iso_now()
     with db() as connection:
-        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id FROM services WHERE id = ?", (service_id,)).fetchone()
+        current = connection.execute("SELECT category, page_id, sort_order, api_key_encrypted, auth_username_encrypted, auth_password_encrypted, management_provider, management_target, management_controller_service_id, management_connection_id, update_policy, update_release_delay_days, update_rollback_policy FROM services WHERE id = ?", (service_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
         if not user.can("secrets:manage"):
@@ -4956,6 +5408,9 @@ def update_service(service_id: int, service: ServiceUpdate, user: SessionUser = 
                 or service.management_target != current["management_target"]
                 or service.management_controller_service_id != current["management_controller_service_id"]
                 or service.management_connection_id != current["management_connection_id"]
+                or service.update_policy != current["update_policy"]
+                or service.update_release_delay_days != current["update_release_delay_days"]
+                or service.update_rollback_policy != current["update_rollback_policy"]
             )
             if sensitive_change:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Editors cannot change credentials or management providers")
@@ -4985,7 +5440,7 @@ def update_service(service_id: int, service: ServiceUpdate, user: SessionUser = 
         connection.execute(
             """
             UPDATE services
-            SET name = ?, type = ?, url = ?, internal_url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, management_provider = ?, management_target = ?, management_controller_service_id = ?, management_connection_id = ?, updated_at = ?
+            SET name = ?, type = ?, url = ?, internal_url = ?, category = ?, page_id = ?, icon = ?, enabled = ?, status_check = ?, favorite = ?, card_size = ?, sort_order = ?, api_key_encrypted = ?, auth_username_encrypted = ?, auth_password_encrypted = ?, management_provider = ?, management_target = ?, management_controller_service_id = ?, management_connection_id = ?, update_policy = ?, update_release_delay_days = ?, update_rollback_policy = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -5008,6 +5463,9 @@ def update_service(service_id: int, service: ServiceUpdate, user: SessionUser = 
                 service.management_target,
                 service.management_controller_service_id,
                 service.management_connection_id,
+                service.update_policy,
+                service.update_release_delay_days,
+                service.update_rollback_policy,
                 now,
                 service_id,
             ),

@@ -231,6 +231,21 @@ Additional management providers are tracked separately below rather than making 
 - TrueNAS System Update & reboot as the first host-update implementation
 - Node.js 24-compatible GitHub Actions maintenance
 
+## Milestone 21 — Smarter update management and recovery ✅
+
+- Opt-in scheduled service-update maintenance windows
+- Per-service Manual / Scheduled / Monitor-only / global-inherit policies
+- Global and per-service release-delay controls based on first-seen update time
+- Sequential scheduled maintenance with configurable stop-on-failure behavior
+- Automatic Docker Compose/Dockge provider suggestions with explicit user approval
+- Pre-update HTTP/integration health baselines and post-update verification
+- Capability-aware rollback modes and provider-specific manual recovery guidance
+- Preserved Docker image rollback until Dashboard-level verification succeeds
+- Persistent pre-host-update service recovery snapshot
+- Post-host-reboot checks for services that were healthy before the reboot
+- Scheduled/manual trigger history and recovery guidance in Update History
+- Host updates remain explicitly confirmed and excluded from unattended scheduling
+
 ## Management-provider follow-ups 🚧
 
 - Portainer provider

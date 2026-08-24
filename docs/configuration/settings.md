@@ -1,6 +1,6 @@
 # Settings
 
-The central **Settings** hub keeps configuration from expanding across the dashboard header. v0.18 makes Settings role-aware and adds Owner-only local user management.
+The central **Settings** hub keeps configuration from expanding across the dashboard header. Settings are role-aware: Owners/Admins can manage global operational settings, while Owners alone manage local users.
 
 ## General
 
@@ -54,6 +54,21 @@ Owner/Admin accounts can change the following intervals without rebuilding or re
 - **Automatic update discovery** — the heavier server-side Docker/TrueNAS update check schedule. Set this to Disabled to stop scheduled discovery; manual **Check for updates** still works.
 
 The browser refresh intervals do not themselves pull Docker images or repeatedly query registries. They read current backend state.
+
+## Updates
+
+Owner/Admin accounts can configure the optional update-maintenance scheduler. Scheduled installation is disabled by default. Settings include:
+
+- **Enable scheduled service updates** — master switch for unattended service-scoped updates.
+- **Maintenance days** — one or more days of the week.
+- **Maintenance window** — start/end times interpreted using the Dashboard server/container local clock; overnight windows are supported.
+- **Default release delay** — minimum age of a detected update before the scheduler may install it.
+- **Automatic rollback** — when enabled, requests rollback only from providers that explicitly advertise a safe automatic rollback path.
+- **Stop on failure** — stops the remaining sequential maintenance queue after the first failed/rolled-back update.
+
+Individual service cards can inherit these defaults or override scheduling, release delay, and rollback behavior. **Monitor only** prevents both manual and scheduled installation for that card. Host-scoped operations such as TrueNAS System updates remain manual and require their normal explicit confirmation.
+
+See [Update Manager](update-manager.md) for scheduler timing, verification, rollback limitations, and recovery behavior.
 
 ## Extensions
 

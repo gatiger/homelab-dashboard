@@ -4,6 +4,31 @@ All notable changes to Homelab Dashboard are documented here.
 
 The project is in active pre-1.0 development. Minor releases may introduce migrations or configuration changes; upgrade notes will be provided when needed.
 
+## [0.21.0] - 2026-08-23
+
+### Added
+- Opt-in scheduled service-update maintenance windows with configurable days, start/end times, release delays, and one unattended pass per maintenance window.
+- Per-service update policies: inherit global behavior, manual, scheduled, or monitor-only, plus per-service release-delay and rollback-policy overrides.
+- Automatic Docker Compose / Dockge management-provider suggestions when an unconfigured card exactly matches a discovered Compose service; user approval is still required.
+- Pre-update HTTP/integration health baselines and application-level post-update verification.
+- Capability-aware provider rollback metadata and provider-specific manual recovery guidance.
+- Docker update-agent commit/rollback flow that preserves the previously running image until Dashboard-level verification succeeds.
+- Persistent pre-host-update service recovery snapshots and post-reboot checks for services that were healthy before the host update.
+- Scheduled/manual trigger information, update first-seen timestamps, rollback mode, and recovery guidance in the Update Manager.
+- Backend/update-agent regression coverage for maintenance windows, release delays, monitor-only behavior, provider rollback modes, Docker rollback, and rollback snapshot commit.
+
+### Changed
+- Scheduled maintenance performs a fresh update discovery before selecting work and updates eligible services sequentially.
+- Scheduled queues stop after the first failure by default; this behavior is configurable.
+- TrueNAS System updates continue to require explicit Owner/Admin confirmation and remain excluded from Update All and scheduled maintenance.
+- Docker updates are not considered complete until both provider/container health and any meaningful pre-update Dashboard HTTP/integration health signals recover.
+- Host-update completion now reports monitored services that fail to recover after the expected host version returns.
+
+### Safety
+- Scheduled installation remains disabled by default.
+- Rollback is provider-declared rather than assumed. Docker's automatic path restores the previous image only; persistent application data/database migrations are not automatically reversed.
+- Providers without a safe automatic rollback path stop/preserve failure details and expose manual recovery guidance instead of pretending rollback succeeded.
+
 ## [0.20.3] - 2026-08-23
 
 ### Added

@@ -37,7 +37,7 @@ Stable releases publish a multi-architecture image for `linux/amd64` and `linux/
 
 ```text
 ghcr.io/gatiger/homelab-dashboard:latest
-ghcr.io/gatiger/homelab-dashboard:0.20.3
+ghcr.io/gatiger/homelab-dashboard:0.21.0
 ```
 
 The normal install is a **single application container** containing the React/Nginx frontend and FastAPI backend. Persistent state is stored at `/app/data`.
@@ -86,7 +86,7 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Reusable management Connections so platform credentials do not require visible controller cards
 - Standardized managed-card update indicators with glowing current/available/error states
 - Automatic in-browser telemetry/update-state refresh without manually reloading the page
-- Central Settings hub for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Extensions, and About
+- Central Settings hub for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Updates, Extensions, and About
 - Configurable browser telemetry/update refresh intervals and scheduled update-discovery interval
 - Built-in Clock/Date, Note, Bookmarks, Dashboard Summary, Service Status, and Update Overview widgets
 - Widgets can be assigned to any page/category and use Compact/Standard/Wide card sizes
@@ -94,14 +94,16 @@ See [Docker integration](docs/configuration/docker-integration.md).
 - Reusable page-template packs that can be exported from an existing page, shared as JSON, imported, enabled/disabled, and used when creating a new page
 - Community service-catalog packs that add safe metadata-only service definitions without editing source code
 - Versioned extension manifests with explicit capabilities/permissions; executable third-party plugin code remains blocked
-- Sequential Update All, health verification, update history, and Docker rollback on failed health checks
+- Sequential Update All, post-update health verification, update history, and Docker rollback on failed health checks
+- Optional scheduled maintenance windows with release delays, per-service policy overrides, stop-on-failure behavior, and automatic rollback where the provider safely supports it
+- Post-host-reboot service recovery verification so a successful host update can still flag services that did not return
 - Dashboard layout export/import with secrets deliberately excluded
 - Page cloning and a visual custom-theme editor
 
 
 ## Update Manager
 
-The **Updates** screen can discover and, where the provider safely supports it, apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers, so the same service can be monitored one way and updated another. Management providers are capability-based and runtime-discovered rather than hard-coded to a fixed platform list. v0.20 adds the first generic host-update execution/recovery path.
+The **Updates** screen can discover and, where the provider safely supports it, apply updates without opening each service separately. Application integrations (for example Sonarr status/queue) are separate from management providers, so the same service can be monitored one way and updated another. Management providers are capability-based and runtime-discovered rather than hard-coded to a fixed platform list. v0.21 adds optional scheduled maintenance, release-age delays, per-service policies, post-update verification, capability-aware rollback, and post-host-reboot service recovery checks. When a card has no update provider yet, Dashboard can also suggest an exact matching Docker Compose/Dockge service discovered by the update agent; the Owner/Admin must approve and save that match before Dashboard gains update control.
 
 TrueNAS App updates use a reusable TrueNAS Connection (URL + encrypted API credentials), so no visible TrueNAS dashboard card is required. A TrueNAS card can use **TrueNAS System** to detect an operating-system update and, for Owner/Admin users with sufficiently privileged TrueNAS API credentials, start an explicit **Update & reboot** operation. Host updates are never included in **Update All**. If Dashboard itself runs on that TrueNAS host, the persisted operation is recovered after Dashboard returns and the new version is verified. Docker Compose/Dockge one-click updates require the optional restricted update-agent sidecar:
 
@@ -113,7 +115,7 @@ The update agent is not required for normal dashboard use. See [Update Manager](
 
 ## Settings, themes, widgets, and extensions
 
-Open **Settings** for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Extensions, and About. Local multi-user access includes **Owner** (full control including users), **Admin** (full operational/configuration control except user management), **Editor** (dashboard/page/widget/basic service editing without credentials or update controls), and **Viewer** (read-only). The Account section supports per-user password changes, one-time recovery-code generation, and recent security activity; the login screen can use a saved recovery code when the password is forgotten. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
+Open **Settings** for General, Account, Users, Dashboard, Appearance, Connections, Monitoring, Updates, Extensions, and About. Local multi-user access includes **Owner** (full control including users), **Admin** (full operational/configuration control except user management), **Editor** (dashboard/page/widget/basic service editing without credentials or update controls), and **Viewer** (read-only). The Account section supports per-user password changes, one-time recovery-code generation, and recent security activity; the login screen can use a saved recovery code when the password is forgotten. Appearance still provides System, Dark, Light, Slate, Ocean, Forest, Violet, and Amber themes; System follows the viewing device's light/dark preference.
 
 See [Users and roles](docs/configuration/users-roles.md) and [Account recovery](docs/configuration/account-recovery.md) for the local-account security model.
 

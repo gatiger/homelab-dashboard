@@ -727,3 +727,10 @@ h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1; margin: 0; letter-spacin
 .host-update-banner strong { font-size: 0.92rem; }
 .host-update-banner span, .host-update-banner small { color: var(--theme-muted); font-size: 0.78rem; }
 .history-reconnecting { background: var(--theme-accent); animation: pulse 1.6s ease-in-out infinite; }
+
+/* v0.21 update automation and recovery */
+.maintenance-days { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 6px; }
+.compact-check { min-height: 34px; padding: 6px 9px; border: 1px solid var(--theme-border-soft); border-radius: 9px; background: color-mix(in srgb, var(--theme-surface-alt) 58%, transparent); }
+.field-label { color: var(--theme-text-secondary); font-size: .84rem; font-weight: 650; }
+.management-suggestion { margin-bottom: 12px; }
+.management-suggestion button { justify-self: start; }

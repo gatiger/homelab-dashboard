@@ -18,7 +18,7 @@ STACKS_ROOT = Path(STACKS_ROOT_RAW).resolve() if STACKS_ROOT_RAW else None
 COMMAND_TIMEOUT = max(30, min(int(os.getenv("UPDATE_AGENT_COMMAND_TIMEOUT", "900")), 3600))
 HEALTH_TIMEOUT = max(15, min(int(os.getenv("UPDATE_AGENT_HEALTH_TIMEOUT", "120")), 900))
 
-app = FastAPI(title="Homelab Dashboard Update Agent", version="0.20.3")
+app = FastAPI(title="Homelab Dashboard Update Agent", version="0.21.0")
 
 
 class Resource(BaseModel):
@@ -38,17 +38,19 @@ class ResourceRequest(BaseModel):
 class UpdateJob(BaseModel):
     id: str
     resource_id: str
-    state: Literal["queued", "running", "success", "failed", "rolled_back"]
+    state: Literal["queued", "running", "verification_pending", "success", "failed", "rolled_back"]
     progress: int = Field(ge=0, le=100)
     stage: str
     detail: str | None = None
     current_version: str | None = None
     latest_version: str | None = None
     update_available: bool | None = None
+    rollback_available: bool = False
 
 
 JOBS: dict[str, UpdateJob] = {}
 JOBS_LOCK = threading.Lock()
+ROLLBACK_CONTEXTS: dict[str, dict[str, object]] = {}
 
 
 def require_token(x_agent_token: str | None) -> None:
@@ -394,11 +396,96 @@ def update_worker(job_id: str) -> None:
                     f"Update failed ({update_exc}); rollback also failed ({rollback_exc})"
                 ) from rollback_exc
 
-        if rollback_tag:
-            run_best_effort("docker", "image", "rm", rollback_tag)
-        set_job(job_id, state="success", progress=100, stage="Update complete", detail=detail, latest_version=new_version, update_available=False)
+        with JOBS_LOCK:
+            ROLLBACK_CONTEXTS[job_id] = {
+                "resource_id": resource.id,
+                "old_image_id": old_image_id,
+                "old_version": old_version,
+                "new_version": new_version,
+                "image_ref": image_ref,
+                "rollback_tag": rollback_tag,
+            }
+        set_job(
+            job_id,
+            state="verification_pending",
+            progress=95,
+            stage="Awaiting Dashboard verification",
+            detail=detail,
+            latest_version=new_version,
+            update_available=False,
+            rollback_available=True,
+        )
     except Exception as exc:
         set_job(job_id, state="failed", progress=100, stage="Update failed", detail=str(exc)[-1200:])
+
+
+def commit_update(job_id: str) -> UpdateJob:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        context = ROLLBACK_CONTEXTS.pop(job_id, None)
+    if not job:
+        raise RuntimeError("Update job not found")
+    if job.state == "success":
+        return job
+    if job.state != "verification_pending" or not context:
+        raise RuntimeError("Update is not awaiting verification")
+    rollback_tag = str(context.get("rollback_tag") or "")
+    if rollback_tag:
+        run_best_effort("docker", "image", "rm", rollback_tag)
+    set_job(job_id, state="success", progress=100, stage="Update verified", rollback_available=False)
+    with JOBS_LOCK:
+        return JOBS[job_id]
+
+
+def rollback_update(job_id: str, reason: str | None = None) -> UpdateJob:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        context = ROLLBACK_CONTEXTS.get(job_id)
+    if not job:
+        raise RuntimeError("Update job not found")
+    if job.state == "rolled_back":
+        return job
+    if job.state != "verification_pending" or not context:
+        raise RuntimeError("No rollback snapshot is available for this update")
+
+    resource = get_resource(str(context["resource_id"]))
+    old_image_id = str(context["old_image_id"])
+    old_version = str(context.get("old_version") or "") or None
+    image_ref = str(context["image_ref"])
+    rollback_tag = str(context.get("rollback_tag") or "")
+    args = compose_args(resource)
+    set_job(job_id, state="running", progress=96, stage="Rolling back after verification failure", detail=reason, rollback_available=True)
+    try:
+        run("docker", "image", "tag", old_image_id, image_ref)
+        run(*args, "up", "-d", "--no-deps", "--force-recreate", resource.service)
+        rollback_ok, rollback_detail = wait_for_health(resource)
+        if not rollback_ok:
+            raise RuntimeError(rollback_detail)
+        if rollback_tag:
+            run_best_effort("docker", "image", "rm", rollback_tag)
+        with JOBS_LOCK:
+            ROLLBACK_CONTEXTS.pop(job_id, None)
+        set_job(
+            job_id,
+            state="rolled_back",
+            progress=100,
+            stage="Update rolled back",
+            detail=f"{reason or 'Dashboard health verification failed'} · Restored: {rollback_detail}",
+            latest_version=old_version,
+            update_available=True,
+            rollback_available=False,
+        )
+    except Exception as exc:
+        set_job(
+            job_id,
+            state="failed",
+            progress=100,
+            stage="Rollback failed",
+            detail=f"{reason or 'Dashboard health verification failed'} · Rollback failed: {exc}",
+            rollback_available=True,
+        )
+    with JOBS_LOCK:
+        return JOBS[job_id]
 
 
 @app.get("/health")
@@ -444,3 +531,25 @@ def get_job(job_id: str, x_agent_token: str | None = Header(default=None)) -> Up
     if not job:
         raise HTTPException(status_code=404, detail="Update job not found")
     return job
+
+
+@app.post("/v1/jobs/{job_id}/commit", response_model=UpdateJob)
+def commit_job(job_id: str, x_agent_token: str | None = Header(default=None)) -> UpdateJob:
+    require_token(x_agent_token)
+    try:
+        return commit_update(job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class RollbackRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+@app.post("/v1/jobs/{job_id}/rollback", response_model=UpdateJob)
+def rollback_job(job_id: str, payload: RollbackRequest, x_agent_token: str | None = Header(default=None)) -> UpdateJob:
+    require_token(x_agent_token)
+    try:
+        return rollback_update(job_id, payload.reason)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

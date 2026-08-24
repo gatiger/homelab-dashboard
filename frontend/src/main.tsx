@@ -65,6 +65,9 @@ type Service = {
   management_target?: string | null;
   management_controller_service_id?: number | null;
   management_connection_id?: number | null;
+  update_policy: "inherit" | "manual" | "scheduled" | "monitor_only";
+  update_release_delay_days?: number | null;
+  update_rollback_policy: "inherit" | "automatic" | "manual";
 };
 
 type ServiceForm = {
@@ -89,6 +92,9 @@ type ServiceForm = {
   management_target: string;
   management_controller_service_id: number | null;
   management_connection_id: number | null;
+  update_policy: "inherit" | "manual" | "scheduled" | "monitor_only";
+  update_release_delay_days: number | null;
+  update_rollback_policy: "inherit" | "automatic" | "manual";
 };
 
 type DashboardPage = {
@@ -153,13 +159,14 @@ type ServiceUpdateState = {
   current_version?: string | null;
   latest_version?: string | null;
   checked_at?: string | null;
+  available_since?: string | null;
   message?: string | null;
   can_update: boolean;
 };
 
 type UpdateJob = {
   id: string;
-  kind: "check" | "update" | "batch" | "host_update";
+  kind: "check" | "update" | "batch" | "scheduled_batch" | "host_update";
   service_id?: number | null;
   active_service_id?: number | null;
   provider?: string | null;
@@ -170,6 +177,8 @@ type UpdateJob = {
   current_version?: string | null;
   latest_version?: string | null;
   detail?: string | null;
+  trigger: "manual" | "scheduled" | "recovery";
+  recovery_guidance?: string | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -216,6 +225,8 @@ type ManagementProviderDescriptor = {
   bulk_eligible: boolean;
   requires_confirmation: boolean;
   suggested_service_types: string[];
+  rollback_mode: "automatic" | "manual" | "none";
+  recovery_guidance?: string | null;
   warning?: string | null;
 };
 
@@ -228,7 +239,7 @@ type ServiceStatus = {
   detail?: string | null;
 };
 
-const APP_VERSION = "0.20.3";
+const APP_VERSION = "0.21.0";
 
 const EMPTY_SERVICE: ServiceForm = {
   name: "",
@@ -252,6 +263,9 @@ const EMPTY_SERVICE: ServiceForm = {
   management_target: "",
   management_controller_service_id: null,
   management_connection_id: null,
+  update_policy: "inherit",
+  update_release_delay_days: null,
+  update_rollback_policy: "inherit",
 };
 
 const API_KEY_INTEGRATIONS: Record<string, { label: string; hint: string }> = {
@@ -597,6 +611,9 @@ function ServiceModal({
     management_target: service.management_target ?? "",
     management_controller_service_id: service.management_controller_service_id ?? null,
     management_connection_id: service.management_connection_id ?? null,
+    update_policy: service.update_policy ?? "inherit",
+    update_release_delay_days: service.update_release_delay_days ?? null,
+    update_rollback_policy: service.update_rollback_policy ?? "inherit",
   } : initialTemplate ? {
     name: ["link", "other"].includes(initialTemplate.type) ? "" : initialTemplate.name,
     type: initialTemplate.type,
@@ -619,12 +636,16 @@ function ServiceModal({
     management_target: "",
     management_controller_service_id: null,
     management_connection_id: null,
+    update_policy: "inherit",
+    update_release_delay_days: null,
+    update_rollback_policy: "inherit",
   } : { ...EMPTY_SERVICE, page_id: defaultPageId });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [managedResources, setManagedResources] = useState<ManagedResource[]>([]);
   const [resourceLoading, setResourceLoading] = useState(false);
   const [resourceError, setResourceError] = useState("");
+  const [managementSuggestion, setManagementSuggestion] = useState<ManagedResource | null>(null);
   const selectedCatalogEntry = catalogByType[form.type];
   const selectedManagementProvider = managementProviders.find((provider) => provider.id === form.management_provider);
   // allServices is retained for compatibility with existing editor behavior; management controllers now use Connections.
@@ -657,6 +678,29 @@ function ServiceModal({
     void loadManagedResources();
     return () => { cancelled = true; };
   }, [form.management_provider, form.management_connection_id, canManageSecrets, managementProviders]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function findDockerSuggestion() {
+      if (!canManageSecrets || form.management_provider !== "none") { setManagementSuggestion(null); return; }
+      if (!managementProviders.some((provider) => provider.id === "docker_compose")) { setManagementSuggestion(null); return; }
+      try {
+        const resources = await api<ManagedResource[]>("/api/management/providers/docker_compose/resources");
+        if (cancelled) return;
+        const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const expected = new Set([normalize(form.type), normalize(form.name)].filter(Boolean));
+        const exact = resources.find((resource) => {
+          const serviceName = resource.id.split("/").pop() ?? resource.name;
+          return expected.has(normalize(serviceName));
+        }) ?? null;
+        setManagementSuggestion(exact);
+      } catch {
+        if (!cancelled) setManagementSuggestion(null);
+      }
+    }
+    const timer = window.setTimeout(() => { void findDockerSuggestion(); }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [canManageSecrets, form.management_provider, form.name, form.type, managementProviders]);
 
   function setField<K extends keyof ServiceForm>(key: K, value: ServiceForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -840,6 +884,11 @@ function ServiceModal({
             <div className="management-heading">
               <div><strong>Update management</strong><small> Optional · lets this card update the service without opening its native UI.</small></div>
             </div>
+            {form.management_provider === "none" && managementSuggestion && <div className="settings-callout management-suggestion">
+              <strong>Update management detected</strong>
+              <span>Docker Compose / Dockge appears to match <b>{managementSuggestion.name}</b>.</span>
+              <button className="secondary compact-button" type="button" onClick={() => setForm((current) => ({ ...current, management_provider: "docker_compose", management_target: managementSuggestion.id, management_connection_id: null, management_controller_service_id: null }))}>Use detected service</button>
+            </div>}
             <div className="form-grid management-grid">
               <label>
                 <span>Managed by</span>
@@ -880,6 +929,35 @@ function ServiceModal({
                   {!resourceError && selectedManagementProvider.warning && <small className="field-error">{selectedManagementProvider.warning}</small>}
                 </label>
               )}
+              {form.management_provider !== "none" && selectedManagementProvider && <>
+                <label>
+                  <span>Update policy</span>
+                  <select value={form.update_policy} onChange={(event) => setField("update_policy", event.target.value as ServiceForm["update_policy"])}>
+                    <option value="inherit">Use global policy</option>
+                    <option value="manual">Manual updates only</option>
+                    <option value="scheduled">Allow scheduled updates</option>
+                    <option value="monitor_only">Monitor only — never install</option>
+                  </select>
+                  <small>Scheduled installation remains disabled until it is enabled globally in Settings → Updates.</small>
+                </label>
+                <label>
+                  <span>Release delay</span>
+                  <select value={form.update_release_delay_days ?? ""} onChange={(event) => setField("update_release_delay_days", event.target.value === "" ? null : Number(event.target.value))}>
+                    <option value="">Use global delay</option>
+                    {[0,1,3,7,14,30].map((value) => <option key={value} value={value}>{value === 0 ? "No delay" : `${value} day${value === 1 ? "" : "s"}`}</option>)}
+                  </select>
+                  <small>The delay starts when Dashboard first sees that specific version as available.</small>
+                </label>
+                <label>
+                  <span>Rollback policy</span>
+                  <select value={form.update_rollback_policy} onChange={(event) => setField("update_rollback_policy", event.target.value as ServiceForm["update_rollback_policy"])}>
+                    <option value="inherit">Use global rollback policy</option>
+                    <option value="automatic">Automatically roll back when supported</option>
+                    <option value="manual">Never auto-rollback this service</option>
+                  </select>
+                  <small>{selectedManagementProvider.rollback_mode === "automatic" ? "This provider supports automatic rollback after failed health verification." : selectedManagementProvider.rollback_mode === "manual" ? "This provider has a manual rollback/recovery path; Dashboard will preserve guidance if verification fails." : "This provider cannot safely automate rollback; Dashboard will stop the queue and show manual recovery guidance."}</small>
+                </label>
+              </>}
             </div>
           </div>}
 
@@ -1347,6 +1425,7 @@ function UpdateManagerModal({
   busy,
   catalogEntries,
   managementProviders,
+  settings,
   canRunUpdates,
   canRunHostUpdates,
   onClose,
@@ -1360,6 +1439,7 @@ function UpdateManagerModal({
   busy: boolean;
   catalogEntries: CatalogEntry[];
   managementProviders: ManagementProviderDescriptor[];
+  settings: DashboardSettings;
   canRunUpdates: boolean;
   canRunHostUpdates: boolean;
   onClose: () => void;
@@ -1390,6 +1470,7 @@ function UpdateManagerModal({
             <button className="primary" type="button" disabled={busy || !!active || available.length === 0} onClick={onUpdateAll}><ArrowUpCircle size={17} /> Update all ({available.length})</button>
           </> : <div className="settings-callout"><strong>Read-only update view</strong><span>Your role can see update status and history but cannot start updates.</span></div>}
         </div>
+        {settings.scheduled_updates_enabled && <div className="settings-callout update-schedule-summary"><strong>Scheduled maintenance enabled</strong><span>{settings.update_maintenance_days.map((day) => ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][day]).join(", ")} · {settings.update_maintenance_start}–{settings.update_maintenance_end} · default {settings.update_release_delay_days}-day release delay · host updates remain manual.</span></div>}
         {active && (
           <div className="update-active">
             <div className="activity-heading"><strong>{active.message}</strong><span>{active.progress}%</span></div>
@@ -1414,6 +1495,8 @@ function UpdateManagerModal({
                     {state?.state === "available" ? "Update available" : state?.state === "current" ? "Up to date" : state?.state === "checking" ? "Checking…" : state?.state === "unavailable" ? "Check failed" : state?.state === "unknown" ? "Not checked" : "Not configured"}
                   </div>
                   {(state?.current_version || state?.latest_version) && <small className="version-line">{state.current_version ?? "?"}{state.latest_version && state.latest_version !== state.current_version ? ` → ${state.latest_version}` : ""}</small>}
+                  {state?.available_since && state.state === "available" && <small>Available since {new Date(state.available_since).toLocaleString()}</small>}
+                  <small>{service.update_policy === "scheduled" ? "Scheduled policy" : service.update_policy === "manual" ? "Manual policy" : service.update_policy === "monitor_only" ? "Monitor only" : "Global update policy"}{provider ? ` · Rollback: ${provider.rollback_mode}` : ""}</small>
                   {state?.message && <small>{state.message}</small>}
                 </div>
                 {mayRun && state?.can_update && <button className="secondary update-row-button" type="button" disabled={busy || !!active || state?.state !== "available" || isActive} onClick={() => onUpdate(service)}>{isActive ? (active?.state === "reconnecting" ? "Reconnecting…" : "Updating…") : isHostUpdate ? "Update & reboot" : "Update"}</button>}
@@ -1424,7 +1507,7 @@ function UpdateManagerModal({
         {jobs.length > 0 && (
           <div className="update-history">
             <div className="section-title"><History size={16} /><h3>Recent activity</h3></div>
-            {jobs.slice(0, 8).map((job) => <div className={`history-row ${job.detail ? "has-detail" : ""}`} key={job.id}><span className={`history-dot history-${job.state}`} /> <strong>{job.kind === "update" || job.kind === "host_update" ? serviceName(job.service_id) : job.kind === "batch" ? "Update all" : "Update check"}</strong><span>{job.message}</span><small>{job.state === "reconnecting" ? "reconnecting" : job.state}</small>{job.detail && <span className="history-detail">{job.detail}</span>}</div>)}
+            {jobs.slice(0, 8).map((job) => <div className={`history-row ${job.detail || job.recovery_guidance ? "has-detail" : ""}`} key={job.id}><span className={`history-dot history-${job.state}`} /> <strong>{job.kind === "update" || job.kind === "host_update" ? serviceName(job.service_id) : job.kind === "batch" ? "Update all" : job.kind === "scheduled_batch" ? "Scheduled maintenance" : "Update check"}</strong><span>{job.message}</span><small>{job.trigger === "scheduled" ? `scheduled · ${job.state}` : job.state === "reconnecting" ? "reconnecting" : job.state}</small>{job.detail && <span className="history-detail">{job.detail}</span>}{job.recovery_guidance && <span className="history-detail"><strong>Recovery:</strong> {job.recovery_guidance}</span>}</div>)}
           </div>
         )}
       </section>
@@ -1500,7 +1583,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [oneTimeRecoveryCode, setOneTimeRecoveryCode] = useState<string | null>(auth.recovery_code ?? null);
   const [editingWidget, setEditingWidget] = useState<DashboardWidget | null | undefined>(undefined);
-  const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>({ dashboard_title: "Homelab Dashboard", show_greeting: true, telemetry_refresh_seconds: 15, update_status_refresh_seconds: 15, active_refresh_seconds: 3, update_check_interval_hours: 12 });
+  const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>({ dashboard_title: "Homelab Dashboard", show_greeting: true, telemetry_refresh_seconds: 15, update_status_refresh_seconds: 15, active_refresh_seconds: 3, update_check_interval_hours: 12, scheduled_updates_enabled: false, update_maintenance_days: [6], update_maintenance_start: "03:00", update_maintenance_end: "06:00", update_release_delay_days: 3, update_stop_on_failure: true, update_automatic_rollback: true });
   const [extensions, setExtensions] = useState<ExtensionDescriptor[]>([]);
   const [extensionRegistry, setExtensionRegistry] = useState<ExtensionRegistryResponse | null>(null);
   const [extensionRegistryLoading, setExtensionRegistryLoading] = useState(false);
@@ -2404,6 +2487,7 @@ function Dashboard({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           busy={updateBusy}
           catalogEntries={catalogEntries}
           managementProviders={managementProviders}
+          settings={dashboardSettings}
           canRunUpdates={canRunUpdates}
           canRunHostUpdates={canRunHostUpdates}
           onClose={() => setUpdatesOpen(false)}
